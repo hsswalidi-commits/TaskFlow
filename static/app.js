@@ -186,7 +186,7 @@ views.tasks = async () => {
   const qs = new URLSearchParams();
   if (S.trash) qs.set('trash', '1');
   else Object.entries(f).forEach(([k, v]) => { if (v) qs.set(k, v); });
-  const { tasks } = await GET('/api/tasks?' + qs);
+  const tasks = await TaskStore.list({ ...f, trash: S.trash });
   view().innerHTML = `
     <div class="row" style="justify-content:space-between;margin-bottom:10px"><h1 style="margin:0">${S.trash ? '🗑️ Trash' : '✅ Tasks'}</h1>
       <div class="row">
@@ -219,7 +219,7 @@ function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTi
 async function bulk(action, value) {
   if (!S.selected.size) return;
   try {
-    await POST('/api/tasks/bulk', { ids: [...S.selected], action, value });
+    await TaskStore.bulk([...S.selected], action, value);
     toast(`Updated ${S.selected.size} task(s)`);
     S.selected.clear(); S.selectMode = false; refresh();
   } catch (e) { fail(e); }
@@ -228,7 +228,7 @@ async function bulk(action, value) {
 // ---- board
 views.board = async () => {
   const qs = S.boardProject ? `&project=${S.boardProject}` : '';
-  const { tasks } = await GET('/api/tasks?status=all&sort=priority' + qs);
+  const tasks = await TaskStore.list({ status: 'all', sort: 'priority', project: S.boardProject });
   const cols = [['todo', '📝 To do'], ['doing', '🚀 In progress'], ['done', '✅ Done']];
   view().innerHTML = `<div class="row" style="justify-content:space-between;margin-bottom:10px"><h1 style="margin:0">🗂️ Board</h1>
     <select id="b-proj" style="width:auto">${projectOptions(S.boardProject, 'All projects')}</select></div>
@@ -247,7 +247,7 @@ views.board = async () => {
       e.preventDefault(); col.classList.remove('over');
       const id = e.dataTransfer.getData('text/plain');
       if (!id) return;
-      try { await PATCH('/api/tasks/' + id, { status: col.dataset.col }); views.board(); } catch (err) { fail(err); }
+      try { await TaskStore.update(id, { status: col.dataset.col }); views.board(); } catch (err) { fail(err); }
     });
   });
 };
@@ -597,7 +597,7 @@ function openTaskDialog(task, defaults = {}) {
       recurrence: $('#d-rec').value, tags: $('#d-tags').value,
     };
     try {
-      if (task) await PATCH('/api/tasks/' + task.id, body); else await POST('/api/tasks', body);
+      if (task) await TaskStore.update(task.id, body); else await TaskStore.create(body);
       dlg.close(); toast('Saved'); refresh(); refreshBadge();
     } catch (err) { fail(err); }
   };
@@ -649,22 +649,22 @@ function openEventDialog(ev, defaultDay) {
 // ---------------------------------------------------------------- actions (event delegation)
 const actions = {
   async toggle(el) {
-    try { await PATCH('/api/tasks/' + el.dataset.id, { status: el.checked ? 'done' : 'todo' }); if (el.checked) toast('Nice work ✓'); await refresh(); refreshBadge(); } catch (e) { fail(e); el.checked = !el.checked; }
+    try { await TaskStore.update(el.dataset.id, { status: el.checked ? 'done' : 'todo' }); if (el.checked) toast('Nice work ✓'); await refresh(); refreshBadge(); } catch (e) { fail(e); el.checked = !el.checked; }
   },
   select(el) { const id = Number(el.dataset.id); el.checked ? S.selected.add(id) : S.selected.delete(id); $('#bulkbar').classList.toggle('show', S.selected.size > 0); $('#bulkbar strong').textContent = `${S.selected.size} selected`; },
-  async edit(el) { try { openTaskDialog(await GET('/api/tasks/' + el.dataset.id)); } catch (e) { fail(e); } },
+  async edit(el) { try { openTaskDialog(await TaskStore.get(el.dataset.id)); } catch (e) { fail(e); } },
   async del(el) {
     const id = el.dataset.id;
-    try { await DEL('/api/tasks/' + id); toast('Task deleted', 'ok', { label: 'Undo', fn: async () => { await POST(`/api/tasks/${id}/restore`); refresh(); } }); refresh(); } catch (e) { fail(e); }
+    try { await TaskStore.remove(id); toast('Task deleted', 'ok', { label: 'Undo', fn: async () => { await TaskStore.restore(id); refresh(); } }); refresh(); } catch (e) { fail(e); }
   },
-  async restore(el) { try { await POST(`/api/tasks/${el.dataset.id}/restore`); toast('Restored'); refresh(); } catch (e) { fail(e); } },
-  async purge(el) { if (!confirm('Delete this task forever?')) return; try { await DEL(`/api/tasks/${el.dataset.id}?purge=1`); refresh(); } catch (e) { fail(e); } },
+  async restore(el) { try { await TaskStore.restore(el.dataset.id); toast('Restored'); refresh(); } catch (e) { fail(e); } },
+  async purge(el) { if (!confirm('Delete this task forever?')) return; try { await TaskStore.purge(el.dataset.id); refresh(); } catch (e) { fail(e); } },
   'new-task'() { openTaskDialog(null); },
   'new-task-day'() { const d = new Date(S.cal.sel + 'T17:00:00'); openTaskDialog(null, { due_at: d.toISOString() }); },
   'select-mode'() { S.selectMode = !S.selectMode; S.selected.clear(); refresh(); },
   'trash-on'() { S.trash = true; refresh(); },
   'trash-off'() { S.trash = false; refresh(); },
-  async 'clear-done'() { if (!confirm('Move all completed tasks to the trash?')) return; try { const r = await POST('/api/tasks/clear-completed'); toast(`${r.cleared} task(s) moved to trash`); refresh(); } catch (e) { fail(e); } },
+  async 'clear-done'() { if (!confirm('Move all completed tasks to the trash?')) return; try { const cleared = await TaskStore.clearDone(); toast(`${cleared} task(s) moved to trash`); refresh(); } catch (e) { fail(e); } },
   bulk(el) { if (el.dataset.v === 'delete' && !confirm(`Delete ${S.selected.size} task(s)?`)) return; bulk(el.dataset.v); },
   'focus-task'(el) { TFTimer.setTask(Number(el.dataset.id)); go('focus'); },
   async briefing() { const out = $('#briefing'); out.textContent = 'Thinking…'; try { const r = await GET('/api/ai/review?kind=daily'); out.innerHTML = `<p>${esc(r.summary)}</p><ul>${r.tips.map((t) => `<li>${esc(t)}</li>`).join('')}</ul>`; } catch (e) { out.textContent = ''; fail(e); } },

@@ -393,6 +393,14 @@ def list_tasks():
     return jsonify(tasks=result, count=len(result))
 
 
+@bp.get("/tasks/migration-export")
+def export_tasks_for_browser_migration():
+    """Full task rows for one-time client migration; never persists the response."""
+    u = current_user()
+    rows = db.query("SELECT * FROM tf_tasks WHERE user_id=? ORDER BY id", (u["id"],))
+    return jsonify(tasks=[dict(r) for r in rows])
+
+
 @bp.post("/tasks")
 def create_task():
     u, d = current_user(), body()

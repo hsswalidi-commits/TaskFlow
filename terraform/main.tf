@@ -20,9 +20,9 @@ provider "google" {
 }
 
 variable "project_id" {
-  description = "Google Cloud project that owns TaskFlow. Override this example default for another project."
+  description = "Google Cloud project that owns TaskFlow."
   type        = string
-  default     = "quantum-rag-chatbot"
+  default     = "leap-coop"
 }
 
 variable "region" {
@@ -64,6 +64,12 @@ variable "max_instances" {
     condition     = var.max_instances >= 1 && floor(var.max_instances) == var.max_instances
     error_message = "max_instances must be an integer greater than or equal to 1."
   }
+}
+
+variable "deletion_protection" {
+  description = "Protect the Cloud Run service from accidental Terraform deletion. Disable only for an explicitly confirmed teardown."
+  type        = bool
+  default     = true
 }
 
 variable "openrouter_model" {
@@ -145,14 +151,15 @@ resource "google_cloud_run_v2_service" "taskflow" {
   name                = local.service_name
   location            = var.region
   ingress             = "INGRESS_TRAFFIC_ALL"
-  deletion_protection = false
+  deletion_protection = var.deletion_protection
 
   template {
     service_account                  = google_service_account.runtime.email
-    max_instance_request_concurrency = 80
-    timeout                          = "300s"
+    max_instance_request_concurrency = 4
+    timeout                          = "120s"
 
     scaling {
+      min_instance_count = 0
       max_instance_count = var.max_instances
     }
 

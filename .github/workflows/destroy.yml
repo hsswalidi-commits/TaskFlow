@@ -1,0 +1,93 @@
+name: Destroy TaskFlow Cloud Run infrastructure
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_destroy:
+        description: Type yes to destroy the Terraform-managed Cloud Run service and IAM bindings.
+        required: true
+        type: choice
+        options: ["no", "yes"]
+        default: "no"
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: taskflow-production-infrastructure
+  cancel-in-progress: false
+
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  REGION: ${{ vars.GCP_REGION || 'me-central1' }}
+
+jobs:
+  destroy:
+    name: Destroy Cloud Run resources
+    if: ${{ inputs.confirm_destroy == 'yes' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: ./.github/actions/setup-gcp-authentication
+        with:
+          gcp_sa_key: ${{ secrets.GCP_SA_KEY }}
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.8.5
+
+      - name: Find latest Terraform state artifact
+        id: previous-state
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runs = await github.rest.actions.listWorkflowRunsForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'deploy.yml',
+              branch: 'main',
+              status: 'completed',
+              per_page: 100
+            });
+            for (const run of runs.data.workflow_runs) {
+              const artifacts = await github.rest.actions.listWorkflowRunArtifacts({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: run.id,
+                per_page: 100
+              });
+              if (artifacts.data.some(a => a.name === 'terraform-state' && !a.expired)) {
+                core.setOutput('run_id', String(run.id));
+                return;
+              }
+            }
+            core.setFailed('No Terraform state artifact exists; refusing to destroy without the current local state.');
+
+      - name: Restore Terraform state
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-state
+          run-id: ${{ steps.previous-state.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: terraform
+
+      - name: Destroy Terraform-managed resources
+        working-directory: terraform
+        env:
+          TF_VAR_project_id: ${{ secrets.GCP_PROJECT_ID }}
+          TF_VAR_region: ${{ vars.GCP_REGION || 'me-central1' }}
+          TF_VAR_image: ${{ vars.GCP_REGION || 'me-central1' }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/taskflow/taskflow@sha256:0000000000000000000000000000000000000000000000000000000000000000
+        run: |
+          terraform init -input=false
+          terraform destroy -input=false -auto-approve -lock-timeout=5m

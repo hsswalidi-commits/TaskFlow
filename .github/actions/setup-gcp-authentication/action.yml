@@ -1,0 +1,33 @@
+name: Set up Google Cloud authentication
+description: Authenticate GitHub Actions to Google Cloud with a service-account key or Workload Identity Federation.
+
+inputs:
+  gcp_sa_key:
+    description: Service-account JSON key. Prefer Workload Identity Federation for new deployments.
+    required: false
+  workload_identity_provider:
+    description: Full Workload Identity Provider resource name.
+    required: false
+  service_account:
+    description: Service-account email used with Workload Identity Federation.
+    required: false
+  project_id:
+    description: Google Cloud project ID.
+    required: false
+
+runs:
+  using: composite
+  steps:
+    - name: Authenticate to Google Cloud
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: ${{ inputs.gcp_sa_key }}
+        workload_identity_provider: ${{ inputs.workload_identity_provider }}
+        service_account: ${{ inputs.service_account }}
+        project_id: ${{ inputs.project_id }}
+        create_credentials_file: true
+        export_environment_variables: true
+    - name: Set up gcloud SDK
+      uses: google-github-actions/setup-gcloud@v2
+      with:
+        project_id: ${{ inputs.project_id }}

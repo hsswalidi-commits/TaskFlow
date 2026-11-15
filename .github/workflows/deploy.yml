@@ -1,0 +1,184 @@
+name: Deploy TaskFlow to Google Cloud Run
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: taskflow-production-infrastructure
+  cancel-in-progress: false
+
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  REGION: ${{ vars.GCP_REGION || 'me-central1' }}
+  IMAGE_REPOSITORY: ${{ vars.GCP_REGION || 'me-central1' }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/taskflow/taskflow
+  IMAGE_TAG: ${{ vars.GCP_REGION || 'me-central1' }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/taskflow/taskflow:${{ github.sha }}
+
+jobs:
+  deploy:
+    name: Build, push, and deploy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: ./.github/actions/setup-gcp-authentication
+        with:
+          gcp_sa_key: ${{ secrets.GCP_SA_KEY }}
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Enable required APIs
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${PROJECT_ID:?Set the GCP_PROJECT_ID GitHub secret}"
+          gcloud services enable \
+            run.googleapis.com artifactregistry.googleapis.com secretmanager.googleapis.com \
+            iam.googleapis.com cloudresourcemanager.googleapis.com serviceusage.googleapis.com \
+            monitoring.googleapis.com \
+            --project "$PROJECT_ID"
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.8.5
+
+      - name: Find previous Terraform state artifact
+        id: previous-state
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const currentArtifacts = await github.rest.actions.listWorkflowRunArtifacts({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: context.runId,
+              per_page: 100
+            });
+            if (currentArtifacts.data.artifacts.some(a => a.name === 'terraform-state' && !a.expired)) {
+              core.setOutput('run_id', String(context.runId));
+              core.info(`Restoring Terraform state from an earlier attempt of run ${context.runId}`);
+              return;
+            }
+            const runs = await github.rest.actions.listWorkflowRunsForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'deploy.yml',
+              branch: 'main',
+              status: 'completed',
+              per_page: 100
+            });
+            for (const run of runs.data.workflow_runs) {
+              if (run.id === context.runId) continue;
+              const artifacts = await github.rest.actions.listWorkflowRunArtifacts({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: run.id,
+                per_page: 100
+              });
+              if (artifacts.data.artifacts.some(a => a.name === 'terraform-state' && !a.expired)) {
+                core.setOutput('run_id', String(run.id));
+                core.info(`Restoring Terraform state from run ${run.id}`);
+                return;
+              }
+            }
+            core.info('No previous state artifact found; this is the initial deployment.');
+
+      - name: Restore Terraform state
+        if: steps.previous-state.outputs.run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-state
+          run-id: ${{ steps.previous-state.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: terraform
+
+      - name: Initialize Terraform
+        working-directory: terraform
+        run: terraform init -input=false
+
+      - name: Bootstrap APIs, Artifact Registry, and Secret Manager secret
+        working-directory: terraform
+        env:
+          TF_VAR_project_id: ${{ secrets.GCP_PROJECT_ID }}
+          TF_VAR_region: ${{ vars.GCP_REGION || 'me-central1' }}
+          TF_VAR_image: ${{ vars.GCP_REGION || 'me-central1' }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/taskflow/taskflow@sha256:0000000000000000000000000000000000000000000000000000000000000000
+        run: |
+          terraform apply -input=false -auto-approve \
+            -lock-timeout=5m \
+            -target=google_project_service.required \
+            -target=google_artifact_registry_repository.taskflow \
+            -target=google_secret_manager_secret.openrouter_api_key
+
+      - name: Add OpenRouter key version to Secret Manager
+        id: secret-version
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${OPENROUTER_API_KEY:?Set the OPENROUTER_API_KEY GitHub secret}"
+          version_name="$(printf '%s' "$OPENROUTER_API_KEY" | gcloud secrets versions add taskflow-openrouter-api-key \
+            --data-file=- --project "$PROJECT_ID" --format='value(name)')"
+          version="${version_name##*/}"
+          [[ "$version" =~ ^[0-9]+$ ]]
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Configure Artifact Registry authentication
+        run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+
+      - name: Build and push digest-pinned image
+        id: image
+        run: |
+          set -euo pipefail
+          digest="$(gcloud artifacts docker images describe "$IMAGE_TAG" \
+            --project "$PROJECT_ID" --format='value(image_summary.digest)' 2>/dev/null || true)"
+          if [[ ! "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            docker build --pull --tag "$IMAGE_TAG" .
+            push_output="$(docker push "$IMAGE_TAG" 2>&1)" || { printf '%s\n' "$push_output"; exit 1; }
+            printf '%s\n' "$push_output"
+            digest="$(printf '%s\n' "$push_output" | grep -oE 'sha256:[a-f0-9]{64}' | tail -n 1)"
+          fi
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo "Could not resolve an immutable image digest" >&2; exit 1; }
+          echo "image=${IMAGE_REPOSITORY}@${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Apply Cloud Run infrastructure
+        working-directory: terraform
+        env:
+          TF_VAR_project_id: ${{ secrets.GCP_PROJECT_ID }}
+          TF_VAR_region: ${{ vars.GCP_REGION || 'me-central1' }}
+          TF_VAR_image: ${{ steps.image.outputs.image }}
+          TF_VAR_runtime_secret_versions: '{"openrouter":"${{ steps.secret-version.outputs.version }}"}'
+          TF_VAR_max_instances: 3
+          TF_VAR_openrouter_model: ${{ vars.OPENROUTER_MODEL || 'openai/gpt-4o-mini' }}
+        run: |
+          terraform apply -input=false -auto-approve -lock-timeout=5m
+
+      - name: Show deployed service URL
+        working-directory: terraform
+        run: |
+          SERVICE_URL="$(terraform output -raw service_url)"
+          echo "TaskFlow deployed at: ${SERVICE_URL}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save Terraform state for the next run
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-state
+          path: |
+            terraform/terraform.tfstate
+            terraform/terraform.tfstate.backup
+          if-no-files-found: ignore
+          retention-days: 90
+          overwrite: true

@@ -31,6 +31,17 @@ variable "region" {
   default     = "me-central1"
 }
 
+variable "service_name" {
+  description = "Unique Cloud Run service name for this TaskFlow instance."
+  type        = string
+  default     = "taskflow-hussam"
+
+  validation {
+    condition     = can(regex("^[a-z0-9]([a-z0-9-]{0,47}[a-z0-9])?$", var.service_name))
+    error_message = "service_name must be a valid lowercase Cloud Run service name of 1-49 characters."
+  }
+}
+
 variable "image" {
   description = "Immutable Artifact Registry image reference pinned by sha256 digest."
   type        = string
@@ -85,7 +96,7 @@ variable "monitoring_notification_channels" {
 }
 
 locals {
-  service_name = "taskflow-app"
+  service_name = var.service_name
   apis = toset([
     "run.googleapis.com",
     "artifactregistry.googleapis.com",

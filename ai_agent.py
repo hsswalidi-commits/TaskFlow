@@ -5,9 +5,12 @@
   structured JSON. Output is ALWAYS validated here before it can become a
   proposal, and proposals only change data after the user approves them.
 """
+import os
+from dotenv import load_dotenv
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"), override=True)
+
 import json
 import logging
-import os
 import re
 import urllib.request
 
@@ -16,7 +19,16 @@ log = logging.getLogger("taskflow.ai")
 MAX_SUBTASKS = 8
 
 
+def get_openrouter_credentials():
+    load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"), override=True)
+    return (os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY"),
+            os.getenv("OPENROUTER_MODEL") or os.getenv("AI_MODEL") or "openai/gpt-4o-mini")
+
+
 def provider():
+    openrouter_key, _ = get_openrouter_credentials()
+    if openrouter_key:
+        return "openrouter"
     forced = os.environ.get("AI_PROVIDER", "").strip().lower()
     if forced in ("anthropic", "openai"):
         key = os.environ.get("ANTHROPIC_API_KEY" if forced == "anthropic" else "OPENAI_API_KEY")
@@ -63,6 +75,18 @@ def llm_json(system, user, max_tokens=1200):
                 data = json.loads(r.read().decode())
             text = "".join(b.get("text", "") for b in data.get("content", []))
         else:
+            if prov == "openrouter":
+                api_key, model = get_openrouter_credentials()
+                if not api_key: return None
+                body = {"model": model,
+                        "response_format": {"type": "json_object"}, "max_tokens": max_tokens,
+                        "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
+                req = urllib.request.Request("https://openrouter.ai/api/v1/chat/completions",
+                    data=json.dumps(body).encode(), headers={"content-type":"application/json",
+                    "authorization":"Bearer "+api_key,"HTTP-Referer":os.environ.get("APP_URL","http://localhost:8080"),"X-Title":"TaskFlow"})
+                with urllib.request.urlopen(req, timeout=25) as r: data=json.loads(r.read().decode())
+                text=data["choices"][0]["message"]["content"]
+                return _extract_json(text)
             base = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
             body = {"model": os.environ.get("AI_MODEL", "gpt-4o-mini"),
                     "response_format": {"type": "json_object"}, "max_tokens": max_tokens,

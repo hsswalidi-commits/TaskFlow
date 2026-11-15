@@ -1,26 +1,29 @@
-/* TaskFlow — soft glassmorphism, lavender + mint */
+/* TaskFlow — clean local-first workspace */
 :root {
-  --bg1: #f3f0ff; --bg2: #e6fbf4;
-  --glass: rgba(255,255,255,.62); --glass-b: rgba(255,255,255,.85);
-  --text: #231f3d; --muted: #6c6788; --line: rgba(110,95,190,.16);
-  --primary: #7b6cf0; --primary-d: #5d4fd6; --mint: #2fc9a0; --rose: #f0577a; --amber: #f2a93b; --sky: #38a8f0;
-  --p1: #9aa0b8; --p2: #38a8f0; --p3: #f2a93b; --p4: #f0577a;
-  --shadow: 0 10px 40px rgba(95,80,200,.14);
-  --radius: 18px;
+  color-scheme: light;
+  --bg1: #f8fafc; --bg2: #ffffff;
+  --glass: #ffffff; --glass-b: #ffffff;
+  --text: #1e293b; --muted: #64748b; --line: #e2e8f0;
+  --primary: #4f46e5; --primary-d: #4338ca; --mint: #0f9f79; --rose: #e04463; --amber: #bd7410; --sky: #1681c4;
+  --p1: #94a3b8; --p2: #1681c4; --p3: #bd7410; --p4: #e04463;
+  --shadow: 0 4px 16px rgba(15,23,42,.06);
+  --radius: 14px;
 }
 :root[data-theme="dark"] {
-  --bg1: #15122a; --bg2: #0e2a27;
-  --glass: rgba(34,30,66,.62); --glass-b: rgba(48,43,92,.85);
-  --text: #eeeaff; --muted: #a6a0c9; --line: rgba(190,180,255,.16);
-  --primary: #9a8cff; --primary-d: #b4a9ff; --shadow: 0 10px 40px rgba(0,0,0,.35);
+  color-scheme: dark;
+  --bg1: #0f172a; --bg2: #111827;
+  --glass: #172033; --glass-b: #1e293b;
+  --text: #e2e8f0; --muted: #94a3b8; --line: #334155;
+  --primary: #a5b4fc; --primary-d: #c7d2fe; --mint: #34d399; --rose: #fb7185; --amber: #fbbf24; --sky: #38bdf8;
+  --shadow: 0 4px 16px rgba(0,0,0,.18);
 }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 html, body { margin: 0; min-height: 100%; }
 body {
-  font-family: ui-rounded, "SF Pro Rounded", "Segoe UI", system-ui, -apple-system, Roboto, "Helvetica Neue", sans-serif;
+  font-family: Inter, "Segoe UI", system-ui, -apple-system, Roboto, "Helvetica Neue", sans-serif;
   color: var(--text); line-height: 1.5;
-  background: linear-gradient(135deg, var(--bg1), var(--bg2)) fixed;
+  background: var(--bg1);
 }
 h1, h2, h3 { margin: 0 0 .5rem; line-height: 1.2; }
 h1 { font-size: 1.6rem; } h2 { font-size: 1.15rem; } h3 { font-size: 1rem; }
@@ -34,8 +37,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .b2 { width: 340px; height: 340px; background: #8ef0d2; bottom: -90px; right: -40px; }
 .b3 { width: 260px; height: 260px; background: #ffc2d9; top: 40%; left: 55%; opacity: .3; }
 
-.glass { background: var(--glass); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
-  border: 1px solid var(--glass-b); border-radius: var(--radius); box-shadow: var(--shadow); }
+.glass { background: var(--glass); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
 
 /* layout */
 .shell { display: grid; grid-template-columns: 232px 1fr; gap: 18px; padding: 18px; min-height: 100vh; }
@@ -189,3 +191,42 @@ label { display: grid; gap: 4px; font-size: .9rem; font-weight: 600; }
   .cal-day .dot { display: inline-block; }
 }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+/* Focused local-first shell and conversational Copilot */
+body { background: var(--bg1); }
+.blob { display: none; }
+.shell { grid-template-columns: 208px minmax(0, 1fr); gap: 24px; padding: 24px; }
+.sidebar { background: var(--glass-b); backdrop-filter: none; -webkit-backdrop-filter: none; box-shadow: none; border-color: var(--line); }
+.user-name { display: none; }
+.nav-item { border-radius: 10px; }
+.nav-item.active { background: rgba(123,108,240,.12); color: var(--primary-d); }
+.main { width: 100%; max-width: 1440px; margin: 0 auto; }
+.quick { background: var(--glass-b); backdrop-filter: none; -webkit-backdrop-filter: none; box-shadow: none; border-color: var(--line); }
+.copilot-shell { width: 100%; height: calc(100vh - 112px); height: calc(100dvh - 112px); min-height: 420px; margin: 0 auto; padding: clamp(18px, 3vw, 32px); display: flex; flex-direction: column; gap: 18px; background: var(--glass); border: 1px solid var(--line); border-radius: 16px; }
+.copilot-heading { display: flex; align-items: flex-start; gap: 14px; }
+.copilot-heading h1 { margin: 0 0 4px; }
+.copilot-heading p { margin: 0; }
+.copilot-mark { width: 42px; height: 42px; flex: none; display: grid; place-items: center; border-radius: 14px; background: rgba(123,108,240,.14); color: var(--primary); font-size: 1.4rem; }
+.chat-transcript { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; display: flex; flex-direction: column; align-items: flex-start; gap: 14px; padding: 8px 2px; }
+.chat-welcome { margin: auto; color: var(--muted); font-size: 1.05rem; }
+.chat-message { max-width: min(88%, 680px); padding: 12px 16px; border: 1px solid var(--line); border-radius: 16px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.user-message { align-self: flex-end; background: rgba(123,108,240,.12); }
+.assistant-message { background: var(--glass-b); }
+.chat-error { color: var(--rose); }
+.chat-confirmation { margin-top: 12px; padding: 14px; border: 1px solid rgba(240,87,122,.35); border-radius: 12px; background: rgba(240,87,122,.06); }
+.chat-confirmation ul { margin: 8px 0 12px; padding-left: 22px; }
+.copilot-composer { display: flex; align-items: flex-end; gap: 10px; padding: 10px; background: var(--glass-b); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 2px 8px rgba(15,23,42,.04); }
+.copilot-composer textarea { min-width: 0; min-height: 76px; max-height: 240px; padding: 14px 16px; border: 1px solid transparent; background: var(--bg1); line-height: 1.55; text-align: start; overflow-y: auto; }
+.copilot-composer textarea:focus { outline: 2px solid rgba(79,70,229,.22); border-color: var(--primary); }
+.copilot-composer .btn { min-height: 48px; padding-inline: 20px; }
+@media (max-width: 860px) {
+  .shell { gap: 0; padding: 12px; }
+  .copilot-shell { height: calc(100vh - 92px); height: calc(100dvh - 92px); min-height: 380px; }
+}
+@media (max-width: 520px) {
+  .copilot-shell { padding: 16px; gap: 14px; border-radius: 16px; }
+  .chat-message { max-width: 96%; }
+  .copilot-composer { gap: 8px; padding: 8px; }
+  .copilot-composer textarea { min-height: 72px; padding: 12px; }
+  .copilot-composer .btn { min-height: 44px; padding-inline: 14px; }
+}

@@ -1,7 +1,7 @@
 /* IndexedDB task persistence. SQLite remains available for legacy features and migration. */
 (() => {
   'use strict';
-  const DB_NAME = 'taskflow', DB_VERSION = 1, STORE = 'tasks';
+  const DB_NAME = 'taskflow', DB_VERSION = 2, STORE = 'tasks';
   let dbPromise;
   const channel = 'BroadcastChannel' in window ? new BroadcastChannel('taskflow-tasks') : null;
   function open() {
@@ -17,6 +17,9 @@
           s.createIndex('deleted_at', 'deleted_at'); s.createIndex('updated_at', 'updated_at');
         }
         if (!db.objectStoreNames.contains('meta')) db.createObjectStore('meta', { keyPath: 'key' });
+        for (const name of ['projects','events','reminders','timeLogs','settings','proposals','conversations']) {
+          if (!db.objectStoreNames.contains(name)) db.createObjectStore(name, {keyPath:'id'});
+        }
       };
       req.onsuccess = () => { req.result.onversionchange = () => req.result.close(); resolve(req.result); };
       req.onerror = () => reject(req.error || new Error('Could not open task database'));
@@ -73,10 +76,21 @@
     await tx(STORE, 'readwrite', s => s.add(row)); notify(); return row;
   }
   async function update(id, fields, expectedVersion) {
-    const row = await get(id); if (!row) throw new Error('Task not found');
-    if (expectedVersion != null && row.version !== expectedVersion) throw new Error('Task changed in another tab; reload and try again');
-    const next = normalize({...row, ...fields}, row);
-    await tx(STORE, 'readwrite', s => s.put(next)); notify(); return next;
+    const db = await open();
+    const next = await new Promise((resolve, reject) => {
+      const t = db.transaction(STORE, 'readwrite'), s = t.objectStore(STORE); let updated;
+      const r = s.get(id);
+      r.onsuccess = () => {
+        const row = r.result;
+        if (!row) { t.abort(); reject(new Error('Task not found')); return; }
+        if (expectedVersion != null && row.version !== expectedVersion) { t.abort(); reject(new Error('Task changed in another tab; reload and try again')); return; }
+        updated = normalize({...row, ...fields}, row);
+        s.put(updated);
+      };
+      t.oncomplete = () => resolve(updated);
+      t.onerror = t.onabort = () => reject(t.error || new Error('Task update failed'));
+    });
+    notify(); return next;
   }
   async function remove(id) { const row = await get(id); if (!row) throw new Error('Task not found'); await update(id, {deleted_at: now()}); const subs = (await list({status:'all'})).flatMap(t=>t.subtasks||[]).filter(t=>t.parent_id===id); for (const s of subs) await update(s.id,{deleted_at:now()}); }
   async function restore(id) { const row = await get(id); if (!row) throw new Error('Task not found'); await update(id,{deleted_at:null}); const all = await tx(STORE,'readonly',s=>requestValue(s.getAll())); for (const child of all.filter(t=>t.parent_id===id&&t.deleted_at)) await update(child.id,{deleted_at:null}); }
@@ -86,12 +100,45 @@
     await tx(STORE,'readwrite',s=>targets.forEach(t=>{ const fields = action==='delete'?{deleted_at:now()}:action==='priority'?{priority:Number(value)}:action==='project'?{project_id:value||null}:{status:action==='done'?'done':action}; s.put(normalize({...t,...fields},t)); })); notify(); return targets.length;
   }
   async function clearDone() { const rows=await list({status:'done'}); for(const t of rows) await remove(t.id); return rows.length; }
+  async function records(name) { if (!['projects','events','reminders','timeLogs','settings','proposals','conversations'].includes(name)) throw new Error('Unknown local store'); return tx(name,'readonly',s=>requestValue(s.getAll())); }
+  async function saveRecord(name, value) { if (!['projects','events','reminders','timeLogs','settings','proposals','conversations'].includes(name)) throw new Error('Unknown local store'); const row={...value,id:value.id||uuid(),updated_at:now()}; await tx(name,'readwrite',s=>s.put(row)); notify(); return row; }
+  async function deleteRecord(name,id) { if (!['projects','events','reminders','timeLogs','settings','proposals','conversations'].includes(name)) throw new Error('Unknown local store'); await tx(name,'readwrite',s=>s.delete(id)); notify(); }
+  async function initializeDefaults() {
+    await open();
+    const defaults = {
+      id:'local', name:'', tz_offset:-new Date().getTimezoneOffset(), work_start:540, work_end:1080,
+      quiet_start:1320, quiet_end:420, remind_lead:30, pomo_work:25, pomo_short:5,
+      pomo_long:15, pomo_cycles:4, created_at:now(), updated_at:now()
+    };
+    await tx('settings','readwrite',s=>{ const r=s.get('local'); r.onsuccess=()=>{if(!r.result)s.add(defaults);}; });
+    const settings = await records('settings');
+    const localSettings=settings.find(x=>x.id==='local')||defaults;
+    for (const store of ['projects','events','reminders','timeLogs','proposals','conversations']) await records(store);
+    return {settings:localSettings};
+  }
+  async function importLegacyBundle(bundle) {
+    const marker=await tx('meta','readonly',s=>requestValue(s.get('legacy-module-import-v1')));
+    if(marker?.done)return {imported:false};
+    const maps={projects:bundle.projects||[],reminders:bundle.reminders||[],timeLogs:bundle.timeLogs||[],proposals:bundle.proposals||[]};
+    let count=0;
+    for(const [store,items] of Object.entries(maps)){
+      const existing=await records(store), seen=new Set(existing.map(x=>String(x.legacy_id||x.id)));
+      for(const item of items){if(seen.has(String(item.id)))continue; await saveRecord(store,{...item,legacy_id:item.id,id:uuid(),source:'legacy'});count++;}
+    }
+    const local=(bundle.settings&&typeof bundle.settings==='object')?bundle.settings:null;
+    if(local){const current=(await records('settings')).find(x=>x.id==='local'); if(current&&!current.legacy_imported)await saveRecord('settings',{...current,...local,id:'local',legacy_imported:true});}
+    await tx('meta','readwrite',s=>s.put({key:'legacy-module-import-v1',done:true,count,completedAt:now()}));
+    return {imported:true,count};
+  }
   async function migrate() {
     const marker = await tx('meta','readonly',s=>requestValue(s.get('sqlite-migration-v1')));
     if (marker?.done) return {migrated:false};
     const existing = await tx(STORE,'readonly',s=>requestValue(s.count()));
     if (existing) return {migrated:false, conflict:true};
-    const {tasks} = await fetch('/api/tasks/migration-export',{credentials:'same-origin'}).then(r=>{if(!r.ok) throw new Error(`Legacy task export failed (${r.status})`);return r.json();});
+    const migrationResponse=await fetch('/api/tasks/migration-export',{credentials:'same-origin'});
+    if(migrationResponse.status===401||migrationResponse.status===404)return {migrated:false,legacyUnavailable:true};
+    if(!migrationResponse.ok)throw new Error(`Legacy task export failed (${migrationResponse.status})`);
+    const {tasks}=await migrationResponse.json();
     const idMap=new Map(tasks.map(t=>[String(t.id),uuid()]));
     const records=[];
     for(const t of tasks) { const row=normalize({...t,id:idMap.get(String(t.id)),parent_id:t.parent_id?idMap.get(String(t.parent_id)):null, deleted_at:t.deleted_at||null},null); row.created_at=t.created_at; row.updated_at=t.updated_at||t.created_at; row.completed_at=t.completed_at; row.position=t.position||0; row.version=1; records.push(row); }
@@ -100,5 +147,5 @@
     if(verify!==records.length) { await tx(STORE,'readwrite',s=>records.forEach(t=>s.delete(t.id))); throw new Error('Migration verification failed; legacy data remains available'); }
     await tx('meta','readwrite',s=>s.put({key:'sqlite-migration-v1',done:true,count:verify,completedAt:now()})); notify(); return {migrated:true,count:verify};
   }
-  window.TaskStore={open,list,get,create,update,remove,restore,purge,bulk,clearDone,migrate,onChange(fn){if(channel)channel.onmessage=fn;}};
+  window.TaskStore={open,list,get,create,update,remove,restore,purge,bulk,clearDone,records,saveRecord,deleteRecord,initializeDefaults,importLegacyBundle,migrate,onChange(fn){if(channel)channel.onmessage=fn;}};
 })();

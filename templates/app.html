@@ -15,23 +15,13 @@
     <aside class="sidebar glass" id="sidebar" aria-label="Main navigation">
       <div class="brand"><span class="logo">✓</span><span>TaskFlow</span></div>
       <nav id="nav">
-        <button data-view="dashboard" class="nav-item">🏠 <span>Dashboard</span></button>
-        <button data-view="tasks" class="nav-item">✅ <span>Tasks</span></button>
-        <button data-view="board" class="nav-item">🗂️ <span>Board</span></button>
-        <button data-view="calendar" class="nav-item">📅 <span>Calendar</span></button>
-        <button data-view="focus" class="nav-item">⏱️ <span>Focus</span></button>
-        <button data-view="planner" class="nav-item">🧭 <span>Planner</span></button>
-        <button data-view="agents" class="nav-item">🤖 <span>AI Agents <b id="proposal-badge" class="badge" hidden>0</b></span></button>
-        <button data-view="analytics" class="nav-item">📊 <span>Analytics</span></button>
-        <button data-view="settings" class="nav-item">⚙️ <span>Settings</span></button>
+        <button data-view="tasks" class="nav-item">✓ <span>Tasks</span></button>
+        <button data-view="board" class="nav-item">▦ <span>Kanban board</span></button>
+        <button data-view="agents" class="nav-item">✦ <span>AI Copilot</span></button>
       </nav>
       <div class="side-foot">
         <div id="user-name" class="user-name"></div>
         <button id="theme-btn" class="btn ghost small" type="button" aria-label="Toggle theme">🌓 Theme</button>
-        <form method="post" action="/logout">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <button class="btn ghost small" type="submit">Sign out</button>
-        </form>
       </div>
     </aside>
 
@@ -40,8 +30,8 @@
         <button id="menu-btn" class="btn ghost icon-only" type="button" aria-label="Open menu">☰</button>
         <form id="quick-form" class="quick glass" autocomplete="off">
           <input id="quick-input" type="text" maxlength="500"
-                 placeholder='Quick add: "finish report tomorrow 5pm #college urgent for 2h"  (press /)'
-                 aria-label="Quick add a task in plain English">
+                 placeholder="Add a task…"
+                 aria-label="Quick add a task">
           <button class="btn primary" type="submit">Add</button>
         </form>
         <button id="timer-pill" class="timer-pill glass" type="button" hidden aria-label="Open focus timer"></button>
@@ -55,6 +45,7 @@
   <div id="toasts" class="toasts" aria-live="polite"></div>
 
   <script src="{{ url_for('static', filename='task_store.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='agent.js') }}" defer></script>
   <script src="{{ url_for('static', filename='timer.js') }}" defer></script>
   <script src="{{ url_for('static', filename='app.js') }}" defer></script>
 </body>

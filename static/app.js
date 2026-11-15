@@ -55,6 +55,40 @@ function toast(msg, type = 'ok', action) {
 }
 const fail = (e) => toast(e.message || String(e), 'err');
 
+async function runCopilot(message) {
+  const input=$('#copilot-input'), out=$('#copilot-output');
+  if(!message||!out)return;
+  if(input)input.disabled=true;
+  const sendButton=$('#copilot-form button[type="submit"]');
+  if(sendButton)sendButton.disabled=true;
+  const userMessage=document.createElement('div');
+  userMessage.className='chat-message user-message';
+  userMessage.textContent=message;
+  out.appendChild(userMessage);
+  const response=document.createElement('div');
+  response.className='chat-message assistant-message';
+  response.setAttribute('aria-live','polite');
+  response.textContent='Copilot is working…';
+  out.appendChild(response);
+  out.scrollTop=out.scrollHeight;
+  try {
+    const result=await TaskFlowAgent.send(message);
+    for(const c of result.changes||[]){if(c.op==='create')await TaskStore.create(c.task);else if(c.op==='update')await TaskStore.update(c.id,c.fields);}
+    response.textContent=result.reply||'Done';
+    if(result.confirmations?.length){
+      const confirmation=document.createElement('div');
+      confirmation.className='chat-confirmation';
+      confirmation.innerHTML=`<strong>Confirm deletion of ${result.confirmations.length} task(s)?</strong><ul>${result.confirmations.map(x=>`<li>${esc(x.title)}</li>`).join('')}</ul><div class="row"><button class="btn danger" type="button" data-confirm-delete>Confirm</button><button class="btn" type="button" data-cancel-delete>Cancel</button></div>`;
+      response.appendChild(confirmation);
+      confirmation.querySelector('[data-confirm-delete]').onclick=async()=>{try{await TaskFlowAgent.confirmDeletions(result.confirmations);confirmation.textContent='Deletion confirmed and applied.';}catch(err){fail(err);}};
+      confirmation.querySelector('[data-cancel-delete]').onclick=()=>{confirmation.textContent='Deletion cancelled.';};
+    }
+    if(input){input.value='';input.style.height='';}
+    out.scrollTop=out.scrollHeight;
+    refreshBadge();
+  } catch(err){response.textContent=err.message||'Copilot request failed.';response.classList.add('chat-error');} finally {if(input)input.disabled=false;if(sendButton)sendButton.disabled=false;}
+}
+
 // ---------------------------------------------------------------- state
 const S = {
   user: null, projects: [], ai: { enabled: false }, view: 'dashboard',
@@ -126,8 +160,8 @@ const refresh = () => go(S.view, true);
 
 // ---- dashboard
 views.dashboard = async () => {
-  const d = await GET('/api/dashboard');
-  const st = d.stats;
+  const tasks = await TaskStore.list({status:'all'});
+  const st = {open:tasks.filter(t=>t.status!=='done').length, overdue:tasks.filter(t=>t.status!=='done'&&t.due_at&&new Date(t.due_at)<new Date()).length, done_today:tasks.filter(t=>t.completed_at&&dayKey(new Date(t.completed_at))===dayKey(new Date())).length, focus_today_min:0, streak:0};
   const hour = new Date().getHours();
   const hi = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
   view().innerHTML = `
@@ -141,19 +175,15 @@ views.dashboard = async () => {
     </div>
     <div class="grid2" style="margin-top:14px">
       <section class="card glass"><h2>🧭 Today's plan</h2>
-        ${d.today_blocks.length ? d.today_blocks.map((b) => `
-          <div class="block p${b.priority}"><span class="agenda-time">${fmtTime(new Date(b.start))}–${fmtTime(new Date(b.end))}</span>
-            <span class="grow">${esc(b.title)}</span>
-            <button class="btn small" data-act="focus-task" data-id="${b.task_id}">Start</button></div>`).join('')
-          : '<div class="empty">Nothing scheduled for the rest of today. Add tasks with estimates and due dates, then open the Planner.</div>'}
+        ${tasks.filter(t=>t.status!=='done').slice(0,5).map(t=>`<div class="block p${t.priority}"><span class="grow">${esc(t.title)}</span><button class="btn small" data-act="focus-task" data-id="${t.id}">Start</button></div>`).join('') || '<div class="empty">Nothing scheduled. Add a task to get started.</div>'}
       </section>
       <section class="card glass"><h2>⚠️ Needs attention</h2>
-        ${d.risks.length ? d.risks.map(riskHtml).join('') : '<div class="empty">No deadline risks right now. 🎉</div>'}
+        ${st.overdue ? `<div class="risk overdue">${st.overdue} overdue task(s)</div>` : '<div class="empty">No overdue tasks. 🎉</div>'}
       </section>
     </div>
     <div class="grid2" style="margin-top:14px">
       <section class="card glass"><h2>📌 Coming up</h2>
-        <div class="task-list">${d.upcoming.length ? d.upcoming.map(taskRow).join('') : '<div class="empty">No upcoming deadlines.</div>'}</div>
+        <div class="task-list">${tasks.filter(t=>t.status!=='done'&&t.due_at).slice(0,6).map(taskRow).join('') || '<div class="empty">No upcoming deadlines.</div>'}</div>
       </section>
       <section class="card glass"><h2>🤖 Daily briefing</h2>
         <div id="briefing" class="muted">Get a short summary of your day and what to do next.</div>
@@ -262,13 +292,14 @@ views.calendar = async () => {
   if (c.mode === 'month') { start = startOfWeek(anchor); count = 42; }
   else { start = startOfWeek(new Date(c.sel + 'T12:00:00')); count = 7; }
   const end = new Date(start); end.setDate(end.getDate() + count);
-  const [tk, ev] = await Promise.all([GET('/api/tasks?status=all'), GET(`/api/events?from=${start.toISOString()}&to=${end.toISOString()}`)]);
+  const [localTasks, localEvents] = await Promise.all([TaskStore.list({status:'all'}), TaskStore.records('events')]);
+  const events = localEvents.filter(e => new Date(e.end_at) >= start && new Date(e.start_at) <= end);
   const byDay = {};
   const add = (k, item) => { (byDay[k] = byDay[k] || []).push(item); };
   const flat = [];
-  tk.tasks.forEach((t) => { flat.push(t); (t.subtasks || []).forEach((s) => flat.push(s)); });
+  localTasks.forEach((t) => { flat.push(t); (t.subtasks || []).forEach((s) => flat.push(s)); });
   flat.filter((t) => t.due_at).forEach((t) => add(dayKey(new Date(t.due_at)), { kind: 't', at: new Date(t.due_at), t }));
-  ev.events.forEach((e) => {
+  events.forEach((e) => {
     const s = new Date(e.start_at), en = new Date(e.end_at);
     for (let d = new Date(s.getFullYear(), s.getMonth(), s.getDate()); d <= en; d.setDate(d.getDate() + 1)) add(dayKey(d), { kind: 'e', at: s, e });
   });
@@ -303,7 +334,7 @@ views.calendar = async () => {
         : `<div class="agenda-item"><span class="agenda-time">${fmtTime(it.at)}</span><span class="grow">${it.t.status === 'done' ? '✅' : '☐'} ${esc(it.t.title)}</span><button class="btn small" data-act="edit" data-id="${it.t.id}">Open</button></div>`).join('')
         : '<div class="empty">Nothing on this day.</div>'}
     </section>`;
-  S.calEvents = ev.events;
+  S.calEvents = events;
 };
 
 function calShift(dir) {
@@ -315,11 +346,11 @@ function calShift(dir) {
 
 // ---- focus
 views.focus = async () => {
-  const { tasks } = await GET('/api/tasks?status=open&sort=priority');
+  const tasks = await TaskStore.list({status:'open', sort:'priority'});
   const flat = [];
   tasks.forEach((t) => { if (!(t.subtasks || []).some((s) => s.status !== 'done')) flat.push(t); (t.subtasks || []).filter((s) => s.status !== 'done').forEach((s) => flat.push({ ...s, title: `${t.title} › ${s.title}` })); });
   const sn = TFTimer.snapshot();
-  const { logs } = await GET('/api/timelogs?days=7');
+  const logs = (await TaskStore.records('timeLogs')).filter(l=>Date.now()-new Date(l.started_at).getTime()<=7*86400000);
   const todayK = dayKey(new Date());
   const todaySec = logs.filter((l) => dayKey(new Date(l.started_at)) === todayK).reduce((a, l) => a + l.duration_sec, 0);
   const presets = [5, 10, 15, 25, 45, 60];
@@ -405,7 +436,18 @@ function onPhaseEnd(info) {
 // ---- planner
 views.planner = async () => {
   const days = Number(sessionStorage.getItem('tf_plan_days') || 7);
-  const p = await GET('/api/planner?days=' + days);
+  const tasks = await TaskStore.list({status:'open',sort:'due'});
+  const events = await TaskStore.records('events');
+  const p = {blocks:[],risks:[],conflicts:[],days:[]};
+  const cursor = new Date(); cursor.setHours(S.user.work_start/60, S.user.work_start%60, 0, 0);
+  tasks.filter(t=>t.status!=='done').forEach(t=>{
+    const minutes=t.estimate_min||30, end=new Date(cursor.getTime()+minutes*60000);
+    p.blocks.push({task_id:t.id,title:t.title,priority:t.priority,start:cursor.toISOString(),end:end.toISOString(),minutes});
+    if(t.due_at&&end>new Date(t.due_at))p.risks.push({level:'high',title:t.title,reason:'Estimated completion is after the due date.',suggestion:'Reschedule or reduce the estimate.'});
+    cursor.setTime(end.getTime());
+  });
+  for(let i=0;i<days;i++){const d=new Date();d.setDate(d.getDate()+i);const date=dayKey(d);const scheduled=p.blocks.filter(b=>dayKey(new Date(b.start))===date).reduce((n,b)=>n+b.minutes,0);p.days.push({date,scheduled_min:scheduled,capacity_min:Math.max(0,(S.user.work_end-S.user.work_start)-scheduled)});}
+  p.conflicts=events.filter(e=>p.blocks.some(b=>new Date(b.start)<new Date(e.end_at)&&new Date(b.end)>new Date(e.start_at))).map(e=>({a:'Scheduled task',b:e.title}));
   const groups = {};
   p.blocks.forEach((b) => { const k = dayKey(new Date(b.start)); (groups[k] = groups[k] || []).push(b); });
   view().innerHTML = `
@@ -443,38 +485,27 @@ function proposalHtml(p, history) {
 
 async function refreshBadge() {
   try {
-    const { proposals } = await GET('/api/proposals?status=pending');
+    const proposals = (await TaskStore.records('proposals')).filter(p => p.status === 'pending');
     const b = $('#proposal-badge');
+    if (!b) return proposals;
     b.hidden = !proposals.length; b.textContent = proposals.length;
     return proposals;
   } catch (e) { return []; }
 }
 
 views.agents = async () => {
-  const [status, pending, all] = await Promise.all([GET('/api/ai/status'), GET('/api/proposals?status=pending'), GET('/api/proposals?status=all')]);
-  const hist = all.proposals.filter((p) => p.status !== 'pending').slice(0, 8);
   view().innerHTML = `
-    <h1>🤖 AI Agents</h1>
-    <p class="muted">Agents <strong>propose</strong>; nothing changes until you approve. The scheduler and validation are deterministic code — AI only drafts breakdowns and coaching.</p>
-    <div class="grid2">
-      <section class="card glass"><h2>Mode</h2>
-        <p>${status.enabled ? `<span class="pill llm">AI model: ${esc(status.provider)}</span>` : '<span class="pill">Built-in rules mode</span>'}</p>
-        <p class="muted">${status.enabled ? 'Agents ask your configured model for structured JSON, which is validated before it becomes a proposal.' : 'No API key configured, so agents use built-in templates and rules. Set ANTHROPIC_API_KEY or OPENAI_API_KEY on the server to enable an AI model.'}</p>
-        <small class="muted">Usage this hour: ${status.used_last_hour} / ${status.limit}</small></section>
-      <section class="card glass"><h2>🎯 Plan a goal</h2>
-        <label>Describe it in plain English<textarea id="goal" maxlength="500" placeholder="Build the club website by next Friday, about 6h in total"></textarea></label>
-        <div class="row" style="margin-top:10px"><button class="btn primary" data-act="plan-goal">Draft a plan</button></div></section>
-    </div>
-    <div class="grid3" style="margin-top:14px">
-      <section class="card glass"><h3>☀️ Daily briefing</h3><p class="muted">What matters today.</p><button class="btn" data-act="review" data-v="daily">Generate</button></section>
-      <section class="card glass"><h3>📆 Weekly review</h3><p class="muted">Reflect and adjust.</p><button class="btn" data-act="review" data-v="weekly">Generate</button></section>
-      <section class="card glass"><h3>🔼 Priority advisor</h3><p class="muted">Flags tasks whose priority no longer matches their deadline.</p><button class="btn" data-act="advise">Scan tasks</button></section>
-    </div>
-    <div id="review-out"></div>
-    <section class="card glass" style="margin-top:14px"><h2>📥 Approval queue <span class="chip">${pending.proposals.length}</span></h2>
-      ${pending.proposals.length ? pending.proposals.map((p) => proposalHtml(p)).join('') : '<div class="empty">No pending proposals. Open a task and choose “Break down with AI”, or draft a plan above.</div>'}</section>
-    ${hist.length ? `<section class="card glass" style="margin-top:14px"><h2>🕘 Recent decisions</h2>${hist.map((p) => proposalHtml(p, true)).join('')}</section>` : ''}`;
-  refreshBadge();
+    <section class="copilot-shell">
+      <header class="copilot-heading"><span class="copilot-mark" aria-hidden="true">✦</span><div><h1>AI Copilot</h1><p class="muted">Plan work, find tasks, and update your board. English and Arabic supported.</p></div></header>
+      <div id="copilot-output" class="chat-transcript" role="log" aria-live="polite" aria-relevant="additions text">
+        <div class="chat-welcome">What would you like to work on?</div>
+      </div>
+      <form id="copilot-form" class="copilot-composer"><textarea id="copilot-input" rows="2" maxlength="4000" autocomplete="off" dir="auto" placeholder="اكتب طلبك هنا أو اسأل الذكاء الاصطناعي… / Type a request or ask your AI Copilot…" aria-label="Message AI Copilot"></textarea><button class="btn primary" type="submit">Send</button></form>
+    </section>`;
+  const cf=$('#copilot-form'), input=$('#copilot-input');
+  if(cf) cf.onsubmit=async e=>{e.preventDefault();await runCopilot(input.value.trim());};
+  input.addEventListener('input',()=>{input.style.height='auto';input.style.height=`${Math.min(input.scrollHeight,240)}px`;});
+  input.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();cf.requestSubmit();}});
 };
 
 function reviewHtml(r) {
@@ -489,7 +520,10 @@ function bars(days, key, cls) {
   return `<div class="bars">${days.map((d) => `<div class="bar-col" title="${esc(d.date)}: ${d[key]}"><span class="bar-val">${d[key] || ''}</span><div class="bar ${cls}" style="height:${Math.round(100 * d[key] / max)}%"></div><span class="bar-lbl">${new Date(d.date + 'T12:00:00').toLocaleDateString([], { weekday: 'narrow' })}</span></div>`).join('')}</div>`;
 }
 views.analytics = async () => {
-  const a = await GET('/api/analytics?days=14');
+  const [tasks, logs] = await Promise.all([TaskStore.list({status:'all'}), TaskStore.records('timeLogs')]);
+  const days = Array.from({length:14},(_,i)=>{const d=new Date();d.setDate(d.getDate()-13+i);const k=dayKey(d);return {date:k,done:tasks.filter(t=>t.completed_at&&dayKey(new Date(t.completed_at))===k).length,focus_min:Math.round(logs.filter(l=>dayKey(new Date(l.started_at))===k).reduce((n,l)=>n+l.duration_sec,0)/60)};});
+  const open=tasks.filter(t=>t.status!=='done'), done=tasks.filter(t=>t.status==='done'), due=done.filter(t=>t.due_at&&t.completed_at);
+  const a={days,streak:0,done_week:done.filter(t=>t.completed_at&&Date.now()-new Date(t.completed_at)<7*86400000).length,focus_week_min:Math.round(logs.filter(l=>Date.now()-new Date(l.started_at)<7*86400000).reduce((n,l)=>n+l.duration_sec,0)/60),on_time_rate:due.length?Math.round(100*due.filter(t=>new Date(t.completed_at)<=new Date(t.due_at)).length/due.length):null,last_minute_rate:null,estimate_accuracy:null,by_project:Object.fromEntries(S.projects.map(p=>[p.name,open.filter(t=>t.project_id===p.id).length])),by_priority:Object.fromEntries([4,3,2,1].map(p=>[p,open.filter(t=>t.priority===p).length]))};
   const pct = (v) => (v === null ? '—' : v + '%');
   view().innerHTML = `
     <h1>📊 Analytics</h1>
@@ -534,32 +568,31 @@ views.settings = async () => {
         <button class="btn" type="button" data-act="notify-perm">🔔 Enable desktop alerts</button></div>
     </form>
     <section class="card glass" style="margin-top:14px"><h2>📁 Projects</h2>
-      <div class="row">${S.projects.map((p) => `<span class="chip" style="background:${esc(p.color)}44">${esc(p.name)} <button class="btn small ghost" data-act="del-project" data-id="${p.id}" aria-label="Delete project">✕</button></span>`).join('') || '<span class="muted">No projects yet.</span>'}</div>
+      <div class="row">${S.projects.map((p) => `<span class="chip" style="background:${esc(p.color)}44"><button class="btn small ghost" data-act="edit-project" data-id="${p.id}">${esc(p.name)}</button><button class="btn small ghost" data-act="del-project" data-id="${p.id}" aria-label="Delete project">✕</button></span>`).join('') || '<span class="muted">No projects yet.</span>'}</div>
       <form id="project-form" class="row" style="margin-top:10px"><input type="text" id="p-name" maxlength="40" placeholder="New project name" style="max-width:260px"><input type="color" id="p-color" value="#7b6cf0" aria-label="Project color"><button class="btn" type="submit">Add project</button></form></section>
     <section class="card glass" style="margin-top:14px"><h2>💾 Your data</h2>
       <p class="muted">Free hosting can wipe the database on redeploy. Export a backup now and then — you can import it back at any time.</p>
       <div class="row"><button class="btn" data-act="export">Export backup (JSON)</button>
-        <label class="btn" style="cursor:pointer;display:inline-block">Import backup<input type="file" id="import-file" accept="application/json" hidden></label>
-        <button class="btn danger" data-act="delete-account">Delete my account</button></div></section>`;
+        <label class="btn" style="cursor:pointer;display:inline-block">Import backup<input type="file" id="import-file" accept="application/json" hidden></label></div></section>`;
   $('#settings-form').onsubmit = async (e) => {
     e.preventDefault();
     try {
-      const r = await PATCH('/api/me', {
+      S.user = await TaskStore.saveRecord('settings', {...S.user,
         name: $('#s-name').value, work_start: timeToMin($('#s-ws').value), work_end: timeToMin($('#s-we').value),
         quiet_start: timeToMin($('#s-qs').value), quiet_end: timeToMin($('#s-qe').value), remind_lead: Number($('#s-lead').value),
         pomo_work: Number($('#s-pw').value), pomo_short: Number($('#s-ps').value), pomo_long: Number($('#s-pl').value), pomo_cycles: Number($('#s-pc').value),
       });
-      S.user = r.user; $('#user-name').textContent = S.user.name; TFTimer.updateSettings(S.user);
+      $('#user-name').textContent = S.user.name; TFTimer.updateSettings(S.user);
       toast('Settings saved');
     } catch (err) { fail(err); }
   };
   $('#project-form').onsubmit = async (e) => {
     e.preventDefault();
-    try { await POST('/api/projects', { name: $('#p-name').value, color: $('#p-color').value }); await loadMe(); views.settings(); toast('Project added'); } catch (err) { fail(err); }
+    try { const p=await TaskStore.saveRecord('projects',{name:$('#p-name').value.trim(),color:$('#p-color').value}); S.projects.push(p); views.settings(); toast('Project added'); } catch (err) { fail(err); }
   };
   $('#import-file').onchange = async (e) => {
     const f = e.target.files[0]; if (!f) return;
-    try { const data = JSON.parse(await f.text()); const r = await POST('/api/import', data); await loadMe(); toast(`Imported ${r.tasks} tasks and ${r.events} events`); } catch (err) { fail(err); }
+    try { const data=JSON.parse(await f.text()); if(data.app!=='taskflow'||!Array.isArray(data.tasks))throw new Error('Invalid TaskFlow backup'); for(const t of data.tasks) await TaskStore.create({...t,id:undefined,parent_id:null}); toast(`Imported ${data.tasks.length} tasks`); await refresh(); } catch (err) { fail(err); }
   };
 };
 
@@ -593,7 +626,7 @@ function openTaskDialog(task, defaults = {}) {
     const body = {
       title: $('#d-title').value, notes: $('#d-notes').value, due_at: fromLocalInput($('#d-due').value),
       estimate_min: $('#d-est').value ? Number($('#d-est').value) : null, priority: Number($('#d-prio').value),
-      status: $('#d-status').value, project_id: $('#d-proj').value ? Number($('#d-proj').value) : null,
+      status: $('#d-status').value, project_id: $('#d-proj').value || null,
       recurrence: $('#d-rec').value, tags: $('#d-tags').value,
     };
     try {
@@ -604,7 +637,7 @@ function openTaskDialog(task, defaults = {}) {
   if (task && !task.parent_id) {
     const add = async () => {
       const v = $('#d-newsub').value.trim(); if (!v) return;
-      try { await POST('/api/tasks', { title: v, parent_id: task.id }); const fresh = await GET('/api/tasks/' + task.id); dlg.close(); openTaskDialog(fresh); refresh(); } catch (err) { fail(err); }
+      try { await TaskStore.create({ title: v, parent_id: task.id, project_id: task.project_id }); const fresh = await TaskStore.get(task.id); fresh.subtasks = (await TaskStore.list({status:'all'})).flatMap(x => x.subtasks || []).filter(x => x.parent_id === task.id); dlg.close(); openTaskDialog(fresh); refresh(); } catch (err) { fail(err); }
     };
     $('#d-addsub').onclick = add;
     $('#d-newsub').onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } };
@@ -612,7 +645,7 @@ function openTaskDialog(task, defaults = {}) {
   const ai = $('#d-ai');
   if (ai) ai.onclick = async () => {
     ai.disabled = true;
-    try { await POST('/api/ai/decompose', { task_id: task.id }); dlg.close(); await refreshBadge(); toast('Proposal ready for your review', 'ok', { label: 'Review', fn: () => go('agents') }); } catch (err) { fail(err); ai.disabled = false; }
+    try { dlg.close(); await go('agents'); await runCopilot(`Break down this task into useful subtasks: ${task.title}`); } catch (err) { fail(err); ai.disabled = false; }
   };
   const rm = $('#d-remind');
   if (rm) rm.onclick = async () => {
@@ -620,7 +653,7 @@ function openTaskDialog(task, defaults = {}) {
     if (!v) return;
     const d = new Date(v.replace(' ', 'T'));
     if (isNaN(d)) { toast('That date/time was not understood', 'err'); return; }
-    try { await POST(`/api/tasks/${task.id}/reminders`, { remind_at: d.toISOString(), message: 'Reminder' }); toast('Reminder set'); } catch (err) { fail(err); }
+    try { await TaskStore.saveRecord('reminders',{task_id:task.id,remind_at:d.toISOString(),message:'Reminder',delivered_at:null}); toast('Reminder set'); } catch (err) { fail(err); }
   };
 }
 
@@ -640,10 +673,10 @@ function openEventDialog(ev, defaultDay) {
   $('#event-form').onsubmit = async (evt) => {
     evt.preventDefault();
     const body = { title: $('#e-title').value, start_at: fromLocalInput($('#e-start').value), end_at: fromLocalInput($('#e-end').value), notes: $('#e-notes').value };
-    try { if (ev) await PATCH('/api/events/' + ev.id, body); else await POST('/api/events', body); dlg.close(); toast('Event saved'); refresh(); } catch (err) { fail(err); }
+    try { if (ev) await TaskStore.saveRecord('events', {...ev,...body}); else await TaskStore.saveRecord('events', body); dlg.close(); toast('Event saved'); refresh(); } catch (err) { fail(err); }
   };
   const del = $('#e-del');
-  if (del) del.onclick = async () => { try { await DEL('/api/events/' + ev.id); dlg.close(); toast('Event deleted'); refresh(); } catch (err) { fail(err); } };
+  if (del) del.onclick = async () => { try { await TaskStore.deleteRecord('events', ev.id); dlg.close(); toast('Event deleted'); refresh(); } catch (err) { fail(err); } };
 }
 
 // ---------------------------------------------------------------- actions (event delegation)
@@ -651,7 +684,7 @@ const actions = {
   async toggle(el) {
     try { await TaskStore.update(el.dataset.id, { status: el.checked ? 'done' : 'todo' }); if (el.checked) toast('Nice work ✓'); await refresh(); refreshBadge(); } catch (e) { fail(e); el.checked = !el.checked; }
   },
-  select(el) { const id = Number(el.dataset.id); el.checked ? S.selected.add(id) : S.selected.delete(id); $('#bulkbar').classList.toggle('show', S.selected.size > 0); $('#bulkbar strong').textContent = `${S.selected.size} selected`; },
+  select(el) { const id = el.dataset.id; el.checked ? S.selected.add(id) : S.selected.delete(id); $('#bulkbar').classList.toggle('show', S.selected.size > 0); $('#bulkbar strong').textContent = `${S.selected.size} selected`; },
   async edit(el) { try { openTaskDialog(await TaskStore.get(el.dataset.id)); } catch (e) { fail(e); } },
   async del(el) {
     const id = el.dataset.id;
@@ -667,12 +700,22 @@ const actions = {
   async 'clear-done'() { if (!confirm('Move all completed tasks to the trash?')) return; try { const cleared = await TaskStore.clearDone(); toast(`${cleared} task(s) moved to trash`); refresh(); } catch (e) { fail(e); } },
   bulk(el) { if (el.dataset.v === 'delete' && !confirm(`Delete ${S.selected.size} task(s)?`)) return; bulk(el.dataset.v); },
   'focus-task'(el) { TFTimer.setTask(Number(el.dataset.id)); go('focus'); },
-  async briefing() { const out = $('#briefing'); out.textContent = 'Thinking…'; try { const r = await GET('/api/ai/review?kind=daily'); out.innerHTML = `<p>${esc(r.summary)}</p><ul>${r.tips.map((t) => `<li>${esc(t)}</li>`).join('')}</ul>`; } catch (e) { out.textContent = ''; fail(e); } },
-  async review(el) { try { const r = await GET('/api/ai/review?kind=' + el.dataset.v); $('#review-out').innerHTML = reviewHtml(r); } catch (e) { fail(e); } },
-  async advise() { try { const r = await POST('/api/ai/advise'); await refreshBadge(); toast(r.proposals.length ? `${r.proposals.length} priority suggestion(s) to review` : 'Priorities look right for your deadlines', 'ok', r.proposals.length ? { label: 'Review', fn: () => go('agents') } : undefined); if (S.view === 'agents') views.agents(); } catch (e) { fail(e); } },
-  async 'plan-goal'() { const g = $('#goal').value.trim(); if (g.length < 3) { toast('Describe your goal first', 'err'); return; } try { await POST('/api/ai/plan', { goal: g }); toast('Plan drafted — review it below'); views.agents(); } catch (e) { fail(e); } },
-  async approve(el) { try { await POST(`/api/proposals/${el.dataset.id}/approve`); toast('Approved and applied'); views.agents(); } catch (e) { fail(e); views.agents(); } },
-  async reject(el) { try { await POST(`/api/proposals/${el.dataset.id}/reject`); toast('Rejected'); views.agents(); } catch (e) { fail(e); } },
+  async briefing() { await go('agents'); await runCopilot('Summarize today’s tasks and recommend what I should focus on.'); },
+  async review(el) { await runCopilot(el.dataset.v==='weekly'?'Review my tasks this week and suggest a realistic plan.':'Summarize today’s tasks and recommend priorities.'); },
+  async advise() { await runCopilot('Identify overdue and high-priority tasks and recommend priority changes.'); },
+  async 'copilot-prompt'(el) { await runCopilot(el.dataset.prompt); },
+  async 'plan-goal'() { const g=$('#goal').value.trim(); if(g.length<3){toast('Describe your goal first','err');return;} await runCopilot(`Create and schedule a task plan for this goal: ${g}`); },
+  async approve(el) {
+    try {
+      const p=(await TaskStore.records('proposals')).find(x=>String(x.id)===el.dataset.id); if(!p)throw new Error('Proposal is not available locally');
+      const d=typeof p.payload==='string'?JSON.parse(p.payload):p.payload;
+      if(p.kind==='priority') await TaskStore.update(d.task_id,{priority:d.priority});
+      else if(p.kind==='decompose') { for(const s of d.subtasks||[]) await TaskStore.create({title:s.title,priority:s.priority||2,estimate_min:s.estimate_min,parent_id:d.task_id}); }
+      else if(p.kind==='plan') { const parent=await TaskStore.create(d.parent); for(const s of d.subtasks||[]) await TaskStore.create({title:s.title,priority:s.priority||2,estimate_min:s.estimate_min,parent_id:parent.id}); }
+      p.status='approved';p.decided_at=new Date().toISOString();await TaskStore.saveRecord('proposals',p);toast('Approved and applied');await views.agents();
+    } catch(e) { fail(e); }
+  },
+  async reject(el) { try { const p=(await TaskStore.records('proposals')).find(x=>String(x.id)===el.dataset.id); if(!p)throw new Error('Proposal is not available locally');p.status='rejected';p.decided_at=new Date().toISOString();await TaskStore.saveRecord('proposals',p);await views.agents(); } catch(e) { fail(e); } },
   'cal-sel'(el) { S.cal.sel = el.dataset.k; const d = new Date(el.dataset.k + 'T12:00:00'); if (S.cal.mode === 'month') { S.cal.y = d.getFullYear(); S.cal.m = d.getMonth(); } views.calendar(); },
   'cal-mode'(el) { S.cal.mode = el.dataset.v; views.calendar(); },
   'cal-prev'() { calShift(-1); }, 'cal-next'() { calShift(1); },
@@ -686,18 +729,14 @@ const actions = {
   'timer-reset'() { if (confirm('Discard this session without logging?')) TFTimer.reset(); },
   'cd-preset'(el) { TFTimer.setCountdown(Number(el.dataset.v)); },
   async 'notify-perm'() { if (!('Notification' in window)) { toast('This browser does not support notifications', 'err'); return; } const r = await Notification.requestPermission(); toast(r === 'granted' ? 'Desktop alerts enabled' : 'Alerts not enabled', r === 'granted' ? 'ok' : 'err'); },
-  async 'del-project'(el) { if (!confirm('Delete this project? Its tasks are kept.')) return; try { await DEL('/api/projects/' + el.dataset.id); await loadMe(); views.settings(); } catch (e) { fail(e); } },
+  async 'del-project'(el) { if (!confirm('Delete this project? Its tasks are kept.')) return; try { await TaskStore.deleteRecord('projects',el.dataset.id); S.projects=S.projects.filter(p=>p.id!==el.dataset.id); views.settings(); } catch (e) { fail(e); } },
+  async 'edit-project'(el) { const p=S.projects.find(x=>x.id===el.dataset.id); if(!p)return; const name=prompt('Project name:',p.name); if(name===null)return; try { const changed=await TaskStore.saveRecord('projects',{...p,name:name.trim()}); S.projects=S.projects.map(x=>x.id===p.id?changed:x); views.settings(); } catch(e){fail(e);} },
   async export() {
     try {
-      const res = await fetch('/api/export', { credentials: 'same-origin' });
-      const blob = await res.blob(); const a = document.createElement('a');
+      const data={app:'taskflow',version:2,exported_at:new Date().toISOString(),tasks:await TaskStore.list({status:'all'}),projects:await TaskStore.records('projects'),events:await TaskStore.records('events'),reminders:await TaskStore.records('reminders'),timelogs:await TaskStore.records('timeLogs')};
+      const blob = new Blob([JSON.stringify(data,null,2)],{type:'application/json'}); const a = document.createElement('a');
       a.href = URL.createObjectURL(blob); a.download = `taskflow-backup-${dayKey(new Date())}.json`; a.click(); URL.revokeObjectURL(a.href);
     } catch (e) { fail(e); }
-  },
-  async 'delete-account'() {
-    if (!confirm('Permanently delete your account and all data? This cannot be undone.')) return;
-    const pw = prompt('Enter your password to confirm:'); if (!pw) return;
-    try { await POST('/api/account/delete', { password: pw }); location.href = '/login'; } catch (e) { fail(e); }
   },
 };
 
@@ -719,12 +758,9 @@ $('#quick-form').addEventListener('submit', async (e) => {
   const input = $('#quick-input'); const text = input.value.trim();
   if (!text) return;
   try {
-    const p = await POST('/api/ai/parse', { text });
-    let pid = p.project_id;
-    if (!pid && p.project_name) { const np = await POST('/api/projects', { name: p.project_name }); pid = np.id; await loadMe(); }
-    await POST('/api/tasks', { title: p.title, priority: p.priority, due_at: p.due_at, estimate_min: p.estimate_min, tags: p.tags, recurrence: p.recurrence, project_id: pid });
+    await TaskStore.create({ title: text });
     input.value = '';
-    toast(`Added “${p.title}”${p.due_at ? ' · due ' + fmtDateTime(p.due_at) : ''}`);
+    toast(`Added “${text}”`);
     if (['tasks', 'dashboard', 'board', 'calendar'].includes(S.view)) refresh();
   } catch (err) { fail(err); }
 });
@@ -733,33 +769,37 @@ $('#quick-form').addEventListener('submit', async (e) => {
 const shown = new Set();
 async function pollReminders() {
   try {
-    const r = await GET('/api/reminders/due');
-    for (const rem of r.reminders) {
+    const reminders=await TaskStore.records('reminders'); const tasks=await TaskStore.list({status:'all'});
+    const due=reminders.filter(r=>!r.delivered_at&&new Date(r.remind_at)<=new Date()).map(r=>({...r,title:tasks.find(t=>t.id===r.task_id)?.title||'Task'}));
+    for (const rem of due) {
       if (shown.has(rem.id)) continue;
       shown.add(rem.id);
       const when = rem.due_at ? ` · due ${fmtDateTime(rem.due_at)}` : '';
       const t = toast(`🔔 ${rem.title}${when}`, 'remind');
       const mk = (label, fn) => { const b = document.createElement('button'); b.className = 'btn small'; b.textContent = label; b.onclick = async () => { await fn(); t.remove(); }; t.appendChild(b); };
-      mk('Snooze 10m', async () => { shown.delete(rem.id); await POST(`/api/reminders/${rem.id}/snooze`, { minutes: 10 }); });
-      mk('Done', async () => { await PATCH('/api/tasks/' + rem.task_id, { status: 'done' }); refresh(); });
+      mk('Snooze 10m', async () => { shown.delete(rem.id); await TaskStore.saveRecord('reminders',{...rem,remind_at:new Date(Date.now()+600000).toISOString(),delivered_at:null}); });
+      mk('Done', async () => { const task = await TaskStore.get(rem.task_id); if (task) await TaskStore.update(task.id, { status: 'done' }); refresh(); });
       mk('Dismiss', async () => {});
       setTimeout(() => t.remove(), 60000);
       notify('Reminder', rem.title + when);
-      await POST(`/api/reminders/${rem.id}/ack`);
+      await TaskStore.saveRecord('reminders',{...rem,delivered_at:new Date().toISOString()});
     }
   } catch (e) { /* offline: try again next tick */ }
 }
 
 // ---------------------------------------------------------------- boot
 async function loadMe() {
-  const me = await GET('/api/me');
-  S.user = me.user; S.projects = me.projects; S.ai = me.ai;
+  const local = await TaskStore.initializeDefaults();
+  S.user = local.settings;
+  S.user.name = S.user.name || 'Local User';
+  S.projects = await TaskStore.records('projects');
+  S.ai = {enabled:true, provider:'OpenRouter'};
   $('#user-name').textContent = S.user.name;
 }
 
 function setupTheme() {
   const saved = localStorage.getItem('tf_theme');
-  const dark = saved ? saved === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const dark = saved === 'dark';
   document.documentElement.dataset.theme = dark ? 'dark' : 'light';
   $('#theme-btn').onclick = () => {
     const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
@@ -776,6 +816,16 @@ document.addEventListener('keydown', (e) => {
   else if (e.key === 'f') { go('focus'); }
 });
 
+let crossTabRefreshQueued = false;
+TaskStore.onChange(() => {
+  if (!['tasks', 'board'].includes(S.view) || crossTabRefreshQueued) return;
+  crossTabRefreshQueued = true;
+  requestAnimationFrame(() => {
+    crossTabRefreshQueued = false;
+    if (['tasks', 'board'].includes(S.view)) refresh();
+  });
+});
+
 async function boot() {
   setupTheme();
   $('#nav').addEventListener('click', (e) => { const b = e.target.closest('[data-view]'); if (b) go(b.dataset.view); });
@@ -783,10 +833,11 @@ async function boot() {
   $('#timer-pill').onclick = () => go('focus');
   await loadMe();
   const offset = -new Date().getTimezoneOffset();
-  if (offset !== S.user.tz_offset) { try { const r = await PATCH('/api/me', { tz_offset: offset }); S.user = r.user; } catch (e) { /* non-fatal */ } }
-  TFTimer.init(S.user, { onTick: onTimerTick, onPhaseEnd, log: (b) => POST('/api/timelogs', b) });
-  const start = (location.hash.replace('#/', '') || 'dashboard');
-  await go(views[start] ? start : 'dashboard');
+  if (offset !== S.user.tz_offset) { S.user.tz_offset = offset; await TaskStore.saveRecord('settings', S.user); }
+  TFTimer.init(S.user, { onTick: onTimerTick, onPhaseEnd, log: async b => { const logs=await TaskStore.records('timeLogs'); if(!logs.some(l=>l.client_id===b.client_id)) await TaskStore.saveRecord('timeLogs',b); } });
+  let start = (location.hash.replace('#/', '') || 'tasks');
+  if (start === 'dashboard') start = 'tasks';
+  await go(views[start] ? start : 'tasks');
   refreshBadge();
   pollReminders();
   setInterval(pollReminders, 30000);

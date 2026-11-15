@@ -10,9 +10,17 @@ instance/
 *.db
 *.sqlite3
 .env
+.env.*
+!.env.example
 
 # OS / editor
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
+.ruff_cache/
+.mypy_cache/
+.cache/
+.coverage
+coverage.xml
+*.log

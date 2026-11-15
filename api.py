@@ -1,4 +1,8 @@
-"""REST API (JSON). Every route is authenticated and scoped to the current user."""
+"""REST API (JSON). Legacy API retained for migration compatibility."""
+import os
+from dotenv import load_dotenv
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"), override=True)
+
 import json
 import re
 import time
@@ -399,6 +403,21 @@ def export_tasks_for_browser_migration():
     u = current_user()
     rows = db.query("SELECT * FROM tf_tasks WHERE user_id=? ORDER BY id", (u["id"],))
     return jsonify(tasks=[dict(r) for r in rows])
+
+
+@bp.get("/local-migration-export")
+def export_local_migration_bundle():
+    """Read-only legacy data bundle for browser bootstrap; source rows remain untouched."""
+    u = current_user()
+    uid = u["id"]
+    def rows(sql, args=(uid,)):
+        return [dict(r) for r in db.query(sql, args)]
+    return jsonify(
+        projects=rows("SELECT id,name,color,created_at FROM tf_projects WHERE user_id=?"),
+        settings={k:u[k] for k in ("name","tz_offset","work_start","work_end","quiet_start","quiet_end","remind_lead","pomo_work","pomo_short","pomo_long","pomo_cycles")},
+        reminders=rows("SELECT id,task_id,remind_at,message,delivered_at FROM tf_reminders WHERE user_id=?"),
+        timeLogs=rows("SELECT id,task_id,client_id,started_at,duration_sec,kind FROM tf_timelogs WHERE user_id=?"),
+        proposals=rows("SELECT id,kind,title,payload,source,status,created_at,decided_at FROM tf_proposals WHERE user_id=?"))
 
 
 @bp.post("/tasks")

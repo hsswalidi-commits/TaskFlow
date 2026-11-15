@@ -88,5 +88,17 @@ def chat():
         return jsonify(error="OpenRouter agent request failed",details=str(e)[:300]),502
 
 
+def create_app(test_config=None):
+    """Return the fully initialized Flask application.
+
+    Routes are registered on the module-level application above, which is also
+    the Gunicorn entry point. Applying test configuration here preserves that
+    setup while allowing the test suite to use the conventional factory API.
+    """
+    if test_config:
+        app.config.update(test_config)
+    return app
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)), debug=False)

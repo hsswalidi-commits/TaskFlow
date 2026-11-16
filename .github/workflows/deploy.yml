@@ -115,6 +115,7 @@ jobs:
           TF_VAR_project_id: ${{ secrets.GCP_PROJECT_ID }}
           TF_VAR_region: ${{ vars.GCP_REGION || 'me-central1' }}
           TF_VAR_image: ${{ vars.GCP_REGION || 'me-central1' }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/taskflowhassan/taskflow@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          TF_VAR_service_name: taskflowhassan
           TF_VAR_runtime_service_account_email: ${{ steps.runtime-identity.outputs.email }}
         shell: bash
         run: |
@@ -128,6 +129,15 @@ jobs:
           legacy_invoker_address="google_cloud_run_v2_service_iam_member.public_invoker"
           if terraform state list | grep -Fxq "$legacy_invoker_address"; then
             terraform state rm -lock-timeout=5m "$legacy_invoker_address"
+          fi
+
+          service_address="google_cloud_run_v2_service.taskflow"
+          if terraform state list | grep -Fxq "$service_address"; then
+            state_service_name="$(terraform state show -no-color "$service_address" |
+              sed -n 's/^[[:space:]]*name[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p')"
+            if [[ "$state_service_name" != "taskflowhassan" ]]; then
+              terraform state rm -lock-timeout=5m "$service_address"
+            fi
           fi
 
           import_if_exists() {
@@ -167,6 +177,13 @@ jobs:
               "projects/${PROJECT_ID}/secrets/taskflow-openrouter-api-key" \
               gcloud secrets describe taskflow-openrouter-api-key \
                 --project "$PROJECT_ID" --format='value(name)'
+          fi
+
+          if ! terraform state list | grep -Fxq "$service_address"; then
+            import_if_exists "$service_address" \
+              "projects/${PROJECT_ID}/locations/${REGION}/services/taskflowhassan" \
+              gcloud run services describe taskflowhassan \
+                --region "$REGION" --project "$PROJECT_ID" --format='value(metadata.name)'
           fi
 
       - name: Bootstrap Artifact Registry and Secret Manager secret

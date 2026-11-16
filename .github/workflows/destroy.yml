@@ -42,6 +42,17 @@ jobs:
           gcp_sa_key: ${{ secrets.GCP_SA_KEY }}
           project_id: ${{ secrets.GCP_PROJECT_ID }}
 
+      - name: Get runtime service account email
+        id: runtime-identity
+        env:
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          email="$(jq -er '.client_email' <<< "$GCP_SA_KEY")"
+          [[ "$email" =~ ^[^@]+@[^@]+\.iam\.gserviceaccount\.com$ ]]
+          echo "email=${email}" >> "$GITHUB_OUTPUT"
+
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v3
         with:
@@ -89,6 +100,7 @@ jobs:
           TF_VAR_region: ${{ vars.GCP_REGION || 'me-central1' }}
           TF_VAR_service_name: taskflow-hussam
           TF_VAR_image: ${{ vars.GCP_REGION || 'me-central1' }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/taskflowhassan/taskflow@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          TF_VAR_runtime_service_account_email: ${{ steps.runtime-identity.outputs.email }}
           TF_VAR_deletion_protection: false
         run: |
           terraform init -input=false

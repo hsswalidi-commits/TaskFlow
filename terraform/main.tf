@@ -52,6 +52,11 @@ variable "image" {
   }
 }
 
+variable "runtime_service_account_email" {
+  description = "Existing service account email used by the Cloud Run runtime."
+  type        = string
+}
+
 variable "runtime_secret_versions" {
   description = "Pinned Secret Manager versions injected into the Cloud Run revision."
   type        = map(string)
@@ -111,13 +116,6 @@ resource "google_artifact_registry_repository" "taskflow" {
   }
 }
 
-resource "google_service_account" "runtime" {
-  project      = var.project_id
-  account_id   = "taskflow-runtime"
-  display_name = "TaskFlow Cloud Run runtime"
-  description  = "Least-privilege runtime identity for TaskFlow."
-}
-
 resource "google_secret_manager_secret" "openrouter_api_key" {
   project   = var.project_id
   secret_id = "taskflow-openrouter-api-key"
@@ -125,13 +123,6 @@ resource "google_secret_manager_secret" "openrouter_api_key" {
   replication {
     auto {}
   }
-}
-
-resource "google_secret_manager_secret_iam_member" "runtime_secret_access" {
-  project   = var.project_id
-  secret_id = google_secret_manager_secret.openrouter_api_key.secret_id
-  role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${google_service_account.runtime.email}"
 }
 
 resource "google_cloud_run_v2_service" "taskflow" {
@@ -142,7 +133,7 @@ resource "google_cloud_run_v2_service" "taskflow" {
   deletion_protection = var.deletion_protection
 
   template {
-    service_account                  = google_service_account.runtime.email
+    service_account                  = var.runtime_service_account_email
     max_instance_request_concurrency = 4
     timeout                          = "120s"
 
@@ -222,10 +213,6 @@ resource "google_cloud_run_v2_service" "taskflow" {
       }
     }
   }
-
-  depends_on = [
-    google_secret_manager_secret_iam_member.runtime_secret_access,
-  ]
 }
 
 resource "google_cloud_run_v2_service_iam_member" "public_invoker" {

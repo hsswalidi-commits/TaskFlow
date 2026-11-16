@@ -94,12 +94,6 @@ variable "openrouter_model" {
   default     = "openai/gpt-4o-mini"
 }
 
-variable "monitoring_notification_channels" {
-  description = "Optional Cloud Monitoring notification channel resource names."
-  type        = list(string)
-  default     = []
-}
-
 locals {
   service_name = var.service_name
 }
@@ -221,49 +215,6 @@ resource "google_cloud_run_v2_service_iam_member" "public_invoker" {
   name     = google_cloud_run_v2_service.taskflow.name
   role     = "roles/run.invoker"
   member   = "allUsers"
-}
-
-resource "google_monitoring_alert_policy" "cloud_run_5xx" {
-  project      = var.project_id
-  display_name = "TaskFlow Cloud Run HTTP 5xx responses"
-  combiner     = "OR"
-  enabled      = true
-
-  conditions {
-    display_name = "TaskFlow service returns HTTP 5xx responses"
-
-    condition_threshold {
-      filter = join(" AND ", [
-        "resource.type = \"cloud_run_revision\"",
-        "resource.labels.service_name = \"${local.service_name}\"",
-        "metric.type = \"run.googleapis.com/request_count\"",
-        "metric.labels.response_code_class = \"5xx\"",
-      ])
-      comparison      = "COMPARISON_GT"
-      threshold_value = 0
-      duration        = "60s"
-
-      aggregations {
-        alignment_period   = "60s"
-        per_series_aligner = "ALIGN_RATE"
-      }
-
-      trigger {
-        count = 1
-      }
-    }
-  }
-
-  alert_strategy {
-    auto_close = "1800s"
-  }
-
-  documentation {
-    mime_type = "text/markdown"
-    content   = "TaskFlow Cloud Run has emitted HTTP 5xx responses for at least one minute. Review Cloud Run request and application logs."
-  }
-
-  notification_channels = var.monitoring_notification_channels
 }
 
 output "service_url" {

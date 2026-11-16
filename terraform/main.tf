@@ -204,14 +204,6 @@ resource "google_cloud_run_v2_service" "taskflow" {
   }
 }
 
-resource "google_cloud_run_v2_service_iam_member" "public_invoker" {
-  project  = var.project_id
-  location = google_cloud_run_v2_service.taskflow.location
-  name     = google_cloud_run_v2_service.taskflow.name
-  role     = "roles/run.invoker"
-  member   = "allUsers"
-}
-
 output "service_url" {
   description = "Public HTTPS URL of the TaskFlow Cloud Run service."
   value       = google_cloud_run_v2_service.taskflow.uri

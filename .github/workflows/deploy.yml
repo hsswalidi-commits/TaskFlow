@@ -125,6 +125,11 @@ jobs:
             terraform state rm -lock-timeout=5m "$legacy_runtime_address"
           fi
 
+          legacy_invoker_address="google_cloud_run_v2_service_iam_member.public_invoker"
+          if terraform state list | grep -Fxq "$legacy_invoker_address"; then
+            terraform state rm -lock-timeout=5m "$legacy_invoker_address"
+          fi
+
           import_if_exists() {
             local address="$1"
             local resource_id="$2"
@@ -231,6 +236,13 @@ jobs:
           TF_VAR_openrouter_model: ${{ vars.OPENROUTER_MODEL || 'openai/gpt-4o-mini' }}
         run: |
           terraform apply -input=false -auto-approve -lock-timeout=5m
+
+      - name: Make Cloud Run service public without changing IAM policy
+        run: |
+          gcloud run services update taskflowhassan \
+            --no-invoker-iam-check \
+            --region "$REGION" \
+            --project "$PROJECT_ID"
 
       - name: Show deployed service URL
         working-directory: terraform

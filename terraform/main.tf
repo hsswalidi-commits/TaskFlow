@@ -97,23 +97,6 @@ variable "monitoring_notification_channels" {
 
 locals {
   service_name = var.service_name
-  apis = toset([
-    "run.googleapis.com",
-    "artifactregistry.googleapis.com",
-    "secretmanager.googleapis.com",
-    "iam.googleapis.com",
-    "cloudresourcemanager.googleapis.com",
-    "serviceusage.googleapis.com",
-    "monitoring.googleapis.com",
-  ])
-}
-
-resource "google_project_service" "required" {
-  for_each = local.apis
-
-  project            = var.project_id
-  service            = each.value
-  disable_on_destroy = false
 }
 
 resource "google_artifact_registry_repository" "taskflow" {
@@ -126,8 +109,6 @@ resource "google_artifact_registry_repository" "taskflow" {
   docker_config {
     immutable_tags = true
   }
-
-  depends_on = [google_project_service.required]
 }
 
 resource "google_service_account" "runtime" {
@@ -135,8 +116,6 @@ resource "google_service_account" "runtime" {
   account_id   = "taskflow-runtime"
   display_name = "TaskFlow Cloud Run runtime"
   description  = "Least-privilege runtime identity for TaskFlow."
-
-  depends_on = [google_project_service.required]
 }
 
 resource "google_secret_manager_secret" "openrouter_api_key" {
@@ -146,8 +125,6 @@ resource "google_secret_manager_secret" "openrouter_api_key" {
   replication {
     auto {}
   }
-
-  depends_on = [google_project_service.required]
 }
 
 resource "google_secret_manager_secret_iam_member" "runtime_secret_access" {
@@ -247,7 +224,6 @@ resource "google_cloud_run_v2_service" "taskflow" {
   }
 
   depends_on = [
-    google_project_service.required,
     google_secret_manager_secret_iam_member.runtime_secret_access,
   ]
 }
@@ -301,7 +277,6 @@ resource "google_monitoring_alert_policy" "cloud_run_5xx" {
   }
 
   notification_channels = var.monitoring_notification_channels
-  depends_on             = [google_project_service.required]
 }
 
 output "service_url" {

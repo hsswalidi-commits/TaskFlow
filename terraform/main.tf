@@ -102,7 +102,7 @@ locals {
 resource "google_artifact_registry_repository" "taskflow" {
   project       = var.project_id
   location      = var.region
-  repository_id = "taskflow"
+  repository_id = "taskflowhassan"
   description   = "TaskFlow application container images"
   format        = "DOCKER"
 

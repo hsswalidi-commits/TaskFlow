@@ -16,8 +16,8 @@ concurrency:
 env:
   PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
   REGION: ${{ vars.GCP_REGION || 'me-central1' }}
-  IMAGE_REPOSITORY: ${{ vars.GCP_REGION || 'me-central1' }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/taskflow/taskflow
-  IMAGE_TAG: ${{ vars.GCP_REGION || 'me-central1' }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/taskflow/taskflow:${{ github.sha }}
+  IMAGE_REPOSITORY: ${{ vars.GCP_REGION || 'me-central1' }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/taskflowhassan/taskflow
+  IMAGE_TAG: ${{ vars.GCP_REGION || 'me-central1' }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/taskflowhassan/taskflow:${{ github.sha }}
 
 jobs:
   deploy:
@@ -96,12 +96,60 @@ jobs:
         working-directory: terraform
         run: terraform init -input=false
 
+      - name: Import existing Artifact Registry and Secret Manager resources
+        working-directory: terraform
+        env:
+          PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          REGION: ${{ vars.GCP_REGION || 'me-central1' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          import_if_exists() {
+            local address="$1"
+            local resource_id="$2"
+            shift 2
+            local output
+
+            if output="$("$@" 2>&1)"; then
+              terraform import -input=false -lock-timeout=5m "$address" "$resource_id"
+            elif grep -Eqi 'NOT_FOUND|not found' <<< "$output"; then
+              echo "Resource not found; Terraform will create it: $resource_id"
+            else
+              printf '%s\n' "$output" >&2
+              return 1
+            fi
+          }
+
+          registry_address="google_artifact_registry_repository.taskflow"
+          if terraform state list | grep -Fxq "$registry_address"; then
+            state_repository_id="$(terraform state show -no-color "$registry_address" |
+              sed -n 's/^[[:space:]]*repository_id[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p')"
+            if [[ "$state_repository_id" != "taskflowhassan" ]]; then
+              terraform state rm -lock-timeout=5m "$registry_address"
+            fi
+          fi
+          if ! terraform state list | grep -Fxq "$registry_address"; then
+            import_if_exists "$registry_address" \
+              "projects/${PROJECT_ID}/locations/${REGION}/repositories/taskflowhassan" \
+              gcloud artifacts repositories describe taskflowhassan \
+                --location "$REGION" --project "$PROJECT_ID" --format='value(name)'
+          fi
+
+          secret_address="google_secret_manager_secret.openrouter_api_key"
+          if ! terraform state list | grep -Fxq "$secret_address"; then
+            import_if_exists "$secret_address" \
+              "projects/${PROJECT_ID}/secrets/taskflow-openrouter-api-key" \
+              gcloud secrets describe taskflow-openrouter-api-key \
+                --project "$PROJECT_ID" --format='value(name)'
+          fi
+
       - name: Bootstrap Artifact Registry and Secret Manager secret
         working-directory: terraform
         env:
           TF_VAR_project_id: ${{ secrets.GCP_PROJECT_ID }}
           TF_VAR_region: ${{ vars.GCP_REGION || 'me-central1' }}
-          TF_VAR_image: ${{ vars.GCP_REGION || 'me-central1' }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/taskflow/taskflow@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          TF_VAR_image: ${{ vars.GCP_REGION || 'me-central1' }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/taskflowhassan/taskflow@sha256:0000000000000000000000000000000000000000000000000000000000000000
         run: |
           terraform apply -input=false -auto-approve \
             -lock-timeout=5m \
@@ -116,9 +164,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          : "${OPENROUTER_API_KEY:?Set the OPENROUTER_API_KEY GitHub secret}"
-          version_name="$(printf '%s' "$OPENROUTER_API_KEY" | gcloud secrets versions add taskflow-openrouter-api-key \
-            --data-file=- --project "$PROJECT_ID" --format='value(name)')"
+          secret_name="taskflow-openrouter-api-key"
+          version_name="$(gcloud secrets versions list "$secret_name" \
+            --project "$PROJECT_ID" --filter='state=ENABLED' --sort-by='~createTime' \
+            --limit=1 --format='value(name)')"
+          if [[ -z "$version_name" ]]; then
+            : "${OPENROUTER_API_KEY:?Set the OPENROUTER_API_KEY GitHub secret when no enabled Secret Manager version exists}"
+            version_name="$(printf '%s' "$OPENROUTER_API_KEY" | gcloud secrets versions add "$secret_name" \
+              --data-file=- --project "$PROJECT_ID" --format='value(name)')"
+          else
+            echo "Reusing the latest enabled Secret Manager version."
+          fi
           version="${version_name##*/}"
           [[ "$version" =~ ^[0-9]+$ ]]
           echo "version=${version}" >> "$GITHUB_OUTPUT"

@@ -88,7 +88,7 @@ jobs:
           TF_VAR_project_id: ${{ secrets.GCP_PROJECT_ID }}
           TF_VAR_region: ${{ vars.GCP_REGION || 'me-central1' }}
           TF_VAR_service_name: taskflow-hussam
-          TF_VAR_image: ${{ vars.GCP_REGION || 'me-central1' }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/taskflow/taskflow@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          TF_VAR_image: ${{ vars.GCP_REGION || 'me-central1' }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/taskflowhassan/taskflow@sha256:0000000000000000000000000000000000000000000000000000000000000000
           TF_VAR_deletion_protection: false
         run: |
           terraform init -input=false

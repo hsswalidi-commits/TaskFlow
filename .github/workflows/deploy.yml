@@ -223,7 +223,7 @@ jobs:
         env:
           TF_VAR_project_id: ${{ secrets.GCP_PROJECT_ID }}
           TF_VAR_region: ${{ vars.GCP_REGION || 'me-central1' }}
-          TF_VAR_service_name: taskflow-hussam
+          TF_VAR_service_name: taskflowhassan
           TF_VAR_image: ${{ steps.image.outputs.image }}
           TF_VAR_runtime_service_account_email: ${{ steps.runtime-identity.outputs.email }}
           TF_VAR_runtime_secret_versions: '{"openrouter":"${{ steps.secret-version.outputs.version }}"}'

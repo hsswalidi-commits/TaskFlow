@@ -34,7 +34,7 @@ variable "region" {
 variable "service_name" {
   description = "Unique Cloud Run service name for this TaskFlow instance."
   type        = string
-  default     = "taskflow-hussam"
+  default     = "taskflowhassan"
 
   validation {
     condition     = can(regex("^[a-z0-9]([a-z0-9-]{0,47}[a-z0-9])?$", var.service_name))
@@ -150,11 +150,6 @@ resource "google_cloud_run_v2_service" "taskflow" {
         }
         cpu_idle          = true
         startup_cpu_boost = true
-      }
-
-      env {
-        name  = "PORT"
-        value = "8080"
       }
 
       env {

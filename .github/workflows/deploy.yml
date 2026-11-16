@@ -254,13 +254,6 @@ jobs:
         run: |
           terraform apply -input=false -auto-approve -lock-timeout=5m
 
-      - name: Make Cloud Run service public without changing IAM policy
-        run: |
-          gcloud run services update taskflowhassan \
-            --no-invoker-iam-check \
-            --region "$REGION" \
-            --project "$PROJECT_ID"
-
       - name: Show deployed service URL
         working-directory: terraform
         run: |

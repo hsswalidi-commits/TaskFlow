@@ -147,5 +147,94 @@
     if(verify!==records.length) { await tx(STORE,'readwrite',s=>records.forEach(t=>s.delete(t.id))); throw new Error('Migration verification failed; legacy data remains available'); }
     await tx('meta','readwrite',s=>s.put({key:'sqlite-migration-v1',done:true,count:verify,completedAt:now()})); notify(); return {migrated:true,count:verify};
   }
-  window.TaskStore={open,list,get,create,update,remove,restore,purge,bulk,clearDone,records,saveRecord,deleteRecord,initializeDefaults,importLegacyBundle,migrate,onChange(fn){if(channel)channel.onmessage=fn;}};
+  // ------------------------------------------------------------ JSON backup
+  const EXPORT_FORMAT = 'taskflow-tasks', EXPORT_VERSION = 3;
+  const STATUSES = new Set(['todo', 'doing', 'done']);
+  const strip = ({subtasks, ...row}) => row;
+  async function exportData() {
+    const all = await tx(STORE, 'readonly', s => requestValue(s.getAll()));
+    const live = all.filter(t => !t.deleted_at), ids = new Set(live.map(t => t.id));
+    const tasks = live.map(strip).map(t => (t.parent_id && !ids.has(t.parent_id)) ? {...t, parent_id: null} : t)
+      .sort((a, b) => (!!a.parent_id) - (!!b.parent_id) || String(a.created_at).localeCompare(String(b.created_at)));
+    return {app: 'taskflow', format: EXPORT_FORMAT, version: EXPORT_VERSION, exported_at: now(),
+      count: tasks.length, tasks, projects: await records('projects')};
+  }
+  async function exportToFile(filename) {
+    const data = await exportData();
+    const blob = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
+    const url = URL.createObjectURL(blob), a = document.createElement('a');
+    a.href = url; a.download = filename || `taskflow-tasks-${now().slice(0, 10)}.json`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+    return data.count;
+  }
+  // Accepts this module's export, the older settings-page backup (nested subtasks), or a bare task array.
+  function validateImport(data) {
+    const list = Array.isArray(data) ? data : (data && typeof data === 'object' && Array.isArray(data.tasks)) ? data.tasks : null;
+    if (!list) throw new Error('Invalid file: expected a TaskFlow export with a "tasks" array');
+    if (!Array.isArray(data) && data.app && data.app !== 'taskflow') throw new Error('Invalid file: not a TaskFlow export');
+    const flat = [];
+    list.forEach((t, i) => {
+      if (!t || typeof t !== 'object' || Array.isArray(t)) throw new Error(`Invalid task at position ${i + 1}`);
+      if (!String(t.title || '').trim()) throw new Error(`Task at position ${i + 1} has no title`);
+      if (t.status != null && !STATUSES.has(t.status)) throw new Error(`Task "${t.title}" has an unknown status "${t.status}"`);
+      if (t.due_at && Number.isNaN(Date.parse(t.due_at))) throw new Error(`Task "${t.title}" has an invalid due date`);
+      if (t.tags != null && !Array.isArray(t.tags) && typeof t.tags !== 'string') throw new Error(`Task "${t.title}" has invalid tags`);
+      flat.push(t);
+      if (Array.isArray(t.subtasks)) t.subtasks.forEach((sub, j) => {
+        if (!sub || typeof sub !== 'object' || !String(sub.title || '').trim()) throw new Error(`Subtask ${j + 1} of "${t.title}" is invalid`);
+        flat.push({...sub, parent_id: t.id ?? sub.parent_id});
+      });
+    });
+    if (flat.length > 20000) throw new Error('Import is too large (over 20,000 tasks)');
+    return {tasks: flat, projects: Array.isArray(data?.projects) ? data.projects.filter(p => p && typeof p === 'object' && p.name) : []};
+  }
+  // Merges imported tasks with fresh ids (never overwrites existing tasks) and keeps parent/subtask links.
+  async function importData(data) {
+    const {tasks, projects} = validateImport(data);
+    const existingProjects = new Set((await records('projects')).map(p => String(p.id)));
+    const projectRows = projects.filter(p => p.id && !existingProjects.has(String(p.id))).map(p => ({...p, id: String(p.id), updated_at: now()}));
+    const knownProjects = new Set([...existingProjects, ...projectRows.map(p => p.id)]);
+    const idMap = new Map(tasks.map(t => [String(t.id ?? uuid()), uuid()]));
+    const rows = tasks.map(t => {
+      const parent = t.parent_id != null ? idMap.get(String(t.parent_id)) : null;
+      const row = normalize({...strip(t), id: idMap.get(String(t.id)) || uuid(), parent_id: parent || null, deleted_at: null,
+        project_id: t.project_id != null && knownProjects.has(String(t.project_id)) ? String(t.project_id) : null}, null);
+      row.created_at = t.created_at && !Number.isNaN(Date.parse(t.created_at)) ? t.created_at : row.created_at;
+      row.completed_at = row.status === 'done' ? (t.completed_at || row.updated_at) : null;
+      row.version = 1; row.subtasks = [];
+      return row;
+    });
+    const db = await open();
+    await new Promise((resolve, reject) => {
+      const t = db.transaction([STORE, 'projects'], 'readwrite');
+      projectRows.forEach(p => t.objectStore('projects').put(p));
+      rows.forEach(r => t.objectStore(STORE).add(r));
+      t.oncomplete = resolve; t.onerror = t.onabort = () => reject(t.error || new Error('Import failed; nothing was changed'));
+    });
+    notify();
+    return {tasks: rows.length, projects: projectRows.length};
+  }
+  async function importFromFile(file) {
+    if (!file) throw new Error('No file selected');
+    if (file.size > 25 * 1024 * 1024) throw new Error('File is too large (max 25 MB)');
+    let data;
+    try { data = JSON.parse(await file.text()); } catch (_) { throw new Error('File is not valid JSON'); }
+    return importData(data);
+  }
+  // Wipes every local data store. Migration markers are kept so legacy server data is never re-imported.
+  async function clearAll() {
+    const db = await open();
+    const stores = Array.from(db.objectStoreNames);
+    await new Promise((resolve, reject) => {
+      const t = db.transaction(stores, 'readwrite');
+      for (const name of stores) if (name !== 'meta') t.objectStore(name).clear();
+      const meta = t.objectStore('meta'), stamp = now();
+      meta.put({key: 'sqlite-migration-v1', done: true, count: 0, completedAt: stamp, cleared: true});
+      meta.put({key: 'legacy-module-import-v1', done: true, count: 0, completedAt: stamp, cleared: true});
+      t.oncomplete = resolve; t.onerror = t.onabort = () => reject(t.error || new Error('Could not clear local data'));
+    });
+    if (channel) channel.postMessage({type: 'cleared'});
+  }
+  window.TaskStore={open,list,get,create,update,remove,restore,purge,bulk,clearDone,records,saveRecord,deleteRecord,initializeDefaults,importLegacyBundle,migrate,exportData,exportToFile,validateImport,importData,importFromFile,clearAll,onChange(fn){if(channel)channel.onmessage=fn;}};
 })();

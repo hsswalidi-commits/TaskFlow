@@ -152,7 +152,7 @@ async function go(name, keepScroll) {
   S.view = name;
   history.replaceState(null, '', '#/' + name);
   $$('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.view === name));
-  $('#sidebar').classList.remove('open');
+  setDrawer(false);
   try { await views[name](); } catch (e) { view().innerHTML = `<div class="card glass empty">Couldn't load this page.<br>${esc(e.message)}</div>`; }
   if (!keepScroll) window.scrollTo({ top: 0 });
 }
@@ -591,8 +591,7 @@ views.settings = async () => {
     try { const p=await TaskStore.saveRecord('projects',{name:$('#p-name').value.trim(),color:$('#p-color').value}); S.projects.push(p); views.settings(); toast('Project added'); } catch (err) { fail(err); }
   };
   $('#import-file').onchange = async (e) => {
-    const f = e.target.files[0]; if (!f) return;
-    try { const data=JSON.parse(await f.text()); if(data.app!=='taskflow'||!Array.isArray(data.tasks))throw new Error('Invalid TaskFlow backup'); for(const t of data.tasks) await TaskStore.create({...t,id:undefined,parent_id:null}); toast(`Imported ${data.tasks.length} tasks`); await refresh(); } catch (err) { fail(err); }
+    await importTasksFile(e.target.files[0]); e.target.value = '';
   };
 };
 
@@ -731,13 +730,7 @@ const actions = {
   async 'notify-perm'() { if (!('Notification' in window)) { toast('This browser does not support notifications', 'err'); return; } const r = await Notification.requestPermission(); toast(r === 'granted' ? 'Desktop alerts enabled' : 'Alerts not enabled', r === 'granted' ? 'ok' : 'err'); },
   async 'del-project'(el) { if (!confirm('Delete this project? Its tasks are kept.')) return; try { await TaskStore.deleteRecord('projects',el.dataset.id); S.projects=S.projects.filter(p=>p.id!==el.dataset.id); views.settings(); } catch (e) { fail(e); } },
   async 'edit-project'(el) { const p=S.projects.find(x=>x.id===el.dataset.id); if(!p)return; const name=prompt('Project name:',p.name); if(name===null)return; try { const changed=await TaskStore.saveRecord('projects',{...p,name:name.trim()}); S.projects=S.projects.map(x=>x.id===p.id?changed:x); views.settings(); } catch(e){fail(e);} },
-  async export() {
-    try {
-      const data={app:'taskflow',version:2,exported_at:new Date().toISOString(),tasks:await TaskStore.list({status:'all'}),projects:await TaskStore.records('projects'),events:await TaskStore.records('events'),reminders:await TaskStore.records('reminders'),timelogs:await TaskStore.records('timeLogs')};
-      const blob = new Blob([JSON.stringify(data,null,2)],{type:'application/json'}); const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob); a.download = `taskflow-backup-${dayKey(new Date())}.json`; a.click(); URL.revokeObjectURL(a.href);
-    } catch (e) { fail(e); }
-  },
+  export() { return exportTasks(); },
 };
 
 document.addEventListener('click', (e) => {
@@ -816,8 +809,88 @@ document.addEventListener('keydown', (e) => {
   else if (e.key === 'f') { go('focus'); }
 });
 
+// ---------------------------------------------------------------- sidebar
+const SIDEBAR_KEY = 'tf_sidebar_collapsed';
+const mobileQuery = window.matchMedia('(max-width: 860px)');
+function syncSidebarUi() {
+  const toggle = $('#sidebar-toggle'), collapsed = document.documentElement.classList.contains('sidebar-collapsed');
+  const label = mobileQuery.matches ? 'Close menu' : (collapsed ? 'Expand sidebar' : 'Collapse sidebar');
+  toggle.setAttribute('aria-label', label); toggle.title = label;
+  toggle.setAttribute('aria-expanded', String(mobileQuery.matches ? $('#sidebar').classList.contains('open') : !collapsed));
+}
+function setDrawer(open) {
+  const isOpen = !!open && mobileQuery.matches;
+  $('#sidebar').classList.toggle('open', isOpen);
+  $('#sidebar-scrim').hidden = !isOpen;
+  document.body.classList.toggle('drawer-open', isOpen);
+  $('#menu-btn').setAttribute('aria-expanded', String(isOpen));
+  syncSidebarUi();
+}
+function setCollapsed(collapsed) {
+  document.documentElement.classList.toggle('sidebar-collapsed', collapsed);
+  try { localStorage.setItem(SIDEBAR_KEY, collapsed ? '1' : '0'); } catch (e) { /* ignore */ }
+  syncSidebarUi();
+}
+function setupSidebar() {
+  $('#sidebar-toggle').onclick = () => {
+    if (mobileQuery.matches) { setDrawer(false); $('#menu-btn').focus(); }
+    else setCollapsed(!document.documentElement.classList.contains('sidebar-collapsed'));
+  };
+  $('#menu-btn').onclick = () => setDrawer(!$('#sidebar').classList.contains('open'));
+  $('#sidebar-scrim').onclick = () => setDrawer(false);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && $('#sidebar').classList.contains('open')) setDrawer(false); });
+  const onViewportChange = () => setDrawer(false);
+  if (mobileQuery.addEventListener) mobileQuery.addEventListener('change', onViewportChange); else mobileQuery.addListener(onViewportChange);
+  syncSidebarUi();
+}
+
+// ---------------------------------------------------------------- data tools
+async function withBusy(btn, fn) {
+  if (btn) btn.disabled = true;
+  try { return await fn(); } finally { if (btn) btn.disabled = false; }
+}
+async function exportTasks() {
+  try {
+    const count = await withBusy($('#export-json-btn'), () => TaskStore.exportToFile(`taskflow-tasks-${dayKey(new Date())}.json`));
+    toast(count ? `Exported ${count} task${count === 1 ? '' : 's'}` : 'Exported an empty task list');
+  } catch (e) { fail(e); }
+}
+async function importTasksFile(file) {
+  if (!file) return;
+  try {
+    const res = await withBusy($('#import-json-btn'), () => TaskStore.importFromFile(file));
+    S.projects = await TaskStore.records('projects');
+    toast(`Imported ${res.tasks} task${res.tasks === 1 ? '' : 's'}${res.projects ? ` and ${res.projects} project${res.projects === 1 ? '' : 's'}` : ''}`);
+    await refresh(); refreshBadge();
+  } catch (e) { fail(e); }
+}
+const APP_STORAGE_KEYS = ['taskflow-copilot-memory-v1', 'tf_timer_v1'];
+async function killAllData() {
+  if (!confirm('Killer: permanently delete ALL TaskFlow data in this browser?\n\nThis removes every task, subtask, project, reminder, focus log and the Copilot chat history. It cannot be undone. Export a JSON backup first if you might need it.')) return;
+  try {
+    await withBusy($('#killer-btn'), async () => {
+      try { TFTimer.reset(); } catch (e) { /* no active session */ }
+      if (window.TaskFlowAgent?.clearMemory) TaskFlowAgent.clearMemory();
+      await TaskStore.clearAll();
+      try {
+        APP_STORAGE_KEYS.forEach((k) => localStorage.removeItem(k));
+        Object.keys(sessionStorage).filter((k) => k.startsWith('tf_') || k.startsWith('taskflow')).forEach((k) => sessionStorage.removeItem(k));
+      } catch (e) { /* storage unavailable */ }
+    });
+    sessionStorage.setItem('tf_flash', 'All local data was cleared');
+    history.replaceState(null, '', location.pathname + '#/tasks'); location.reload();
+  } catch (e) { fail(e); }
+}
+function setupDataTools() {
+  $('#export-json-btn').onclick = exportTasks;
+  $('#import-json-btn').onclick = () => $('#import-json-file').click();
+  $('#import-json-file').onchange = async (e) => { await importTasksFile(e.target.files[0]); e.target.value = ''; };
+  $('#killer-btn').onclick = killAllData;
+}
+
 let crossTabRefreshQueued = false;
-TaskStore.onChange(() => {
+TaskStore.onChange((e) => {
+  if (e?.data?.type === 'cleared') { location.reload(); return; }
   if (!['tasks', 'board'].includes(S.view) || crossTabRefreshQueued) return;
   crossTabRefreshQueued = true;
   requestAnimationFrame(() => {
@@ -828,8 +901,9 @@ TaskStore.onChange(() => {
 
 async function boot() {
   setupTheme();
+  setupSidebar();
+  setupDataTools();
   $('#nav').addEventListener('click', (e) => { const b = e.target.closest('[data-view]'); if (b) go(b.dataset.view); });
-  $('#menu-btn').onclick = () => $('#sidebar').classList.toggle('open');
   $('#timer-pill').onclick = () => go('focus');
   await loadMe();
   const offset = -new Date().getTimezoneOffset();
@@ -839,6 +913,8 @@ async function boot() {
   if (start === 'dashboard') start = 'tasks';
   await go(views[start] ? start : 'tasks');
   refreshBadge();
+  const flash = sessionStorage.getItem('tf_flash');
+  if (flash) { sessionStorage.removeItem('tf_flash'); toast(flash); }
   pollReminders();
   setInterval(pollReminders, 30000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) pollReminders(); });

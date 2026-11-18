@@ -7,27 +7,40 @@
   <title>TaskFlow</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%238b7cf6'/%3E%3Cpath d='M18 33l9 9 19-21' fill='none' stroke='white' stroke-width='7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <script src="{{ url_for('static', filename='sidebar_init.js') }}"></script>
 </head>
 <body>
   <div class="blob b1"></div><div class="blob b2"></div><div class="blob b3"></div>
 
   <div class="shell">
     <aside class="sidebar glass" id="sidebar" aria-label="Main navigation">
-      <div class="brand"><span class="logo">✓</span><span>TaskFlow</span></div>
+      <div class="side-head">
+        <div class="brand"><span class="logo">✓</span><span class="side-label">TaskFlow</span></div>
+        <button id="sidebar-toggle" class="sidebar-toggle" type="button" aria-controls="sidebar" aria-expanded="true" aria-label="Collapse sidebar" title="Collapse sidebar">
+          <span aria-hidden="true">«</span>
+        </button>
+      </div>
       <nav id="nav">
-        <button data-view="tasks" class="nav-item">✓ <span>Tasks</span></button>
-        <button data-view="board" class="nav-item">▦ <span>Kanban board</span></button>
-        <button data-view="agents" class="nav-item">✦ <span>AI Copilot</span></button>
+        <button data-view="tasks" class="nav-item" title="Tasks"><span class="nav-ico" aria-hidden="true">✓</span><span class="side-label">Tasks</span></button>
+        <button data-view="board" class="nav-item" title="Kanban board"><span class="nav-ico" aria-hidden="true">▦</span><span class="side-label">Kanban board</span></button>
+        <button data-view="agents" class="nav-item" title="AI Copilot"><span class="nav-ico" aria-hidden="true">✦</span><span class="side-label">AI Copilot</span></button>
       </nav>
       <div class="side-foot">
         <div id="user-name" class="user-name"></div>
-        <button id="theme-btn" class="btn ghost small" type="button" aria-label="Toggle theme">🌓 Theme</button>
+        <div class="data-tools" role="group" aria-label="Data tools">
+          <button id="export-json-btn" class="side-btn" type="button" title="Export JSON"><span class="nav-ico" aria-hidden="true">⤓</span><span class="side-label">Export JSON</span></button>
+          <button id="import-json-btn" class="side-btn" type="button" title="Import JSON"><span class="nav-ico" aria-hidden="true">⤒</span><span class="side-label">Import JSON</span></button>
+          <input id="import-json-file" type="file" accept="application/json,.json" hidden>
+        </div>
+        <button id="theme-btn" class="side-btn" type="button" aria-label="Toggle theme" title="Toggle theme"><span class="nav-ico" aria-hidden="true">🌓</span><span class="side-label">Theme</span></button>
+        <button id="killer-btn" class="side-btn killer-btn" type="button" title="Killer: permanently clear all local data" aria-label="Killer: clear all data"><span class="nav-ico" aria-hidden="true">☠</span><span class="side-label">Killer · Clear Data</span></button>
       </div>
     </aside>
+    <div id="sidebar-scrim" class="sidebar-scrim" hidden></div>
 
     <main class="main">
       <header class="topbar">
-        <button id="menu-btn" class="btn ghost icon-only" type="button" aria-label="Open menu">☰</button>
+        <button id="menu-btn" class="btn ghost icon-only" type="button" aria-controls="sidebar" aria-expanded="false" aria-label="Open menu">☰</button>
         <form id="quick-form" class="quick glass" autocomplete="off">
           <input id="quick-input" type="text" maxlength="500"
                  placeholder="Add a task…"

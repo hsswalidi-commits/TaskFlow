@@ -18,6 +18,7 @@
       try { localStorage.setItem(memoryKey,JSON.stringify(history)); } catch (_) {}
       return data;
     },
+    clearMemory() { history = []; try { localStorage.removeItem(memoryKey); } catch (_) {} },
     async confirmDeletions(items) {
       const current=await Promise.all(items.map(x=>window.TaskStore.get(x.id)));
       for(let i=0;i<items.length;i++)if(!current[i]||current[i].version!==(items[i].version||1))throw new Error('Task changed since the deletion preview; request a fresh confirmation.');

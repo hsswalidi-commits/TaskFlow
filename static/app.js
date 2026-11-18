@@ -113,35 +113,84 @@ function dueChip(t) {
   return `<span class="chip ${cls}">📅 ${esc(fmtDateTime(t.due_at))}${cls === 'late' ? ' · overdue' : ''}</span>`;
 }
 
+const ICONS = {
+  timer: '<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2.5"/><path d="M9.5 2.5h5"/>',
+  edit: '<path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16z"/><path d="M13.5 6.5l4 4"/>',
+  trash: '<path d="M4 7h16"/><path d="M10 11v6M14 11v6"/><path d="M6 7l1 13h10l1-13"/><path d="M9 7V4h6v3"/>',
+  next: '<path d="M5 12h14"/><path d="M13 6l6 6-6 6"/>',
+  prev: '<path d="M19 12H5"/><path d="M11 6l-6 6 6 6"/>',
+  check: '<path d="M5 12.5l4.5 4.5L19 7"/>',
+  undo: '<path d="M9 14L4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>',
+};
+const icon = (name) => `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false">${ICONS[name]}</svg>`;
+const iconBtn = (act, t, name, label, cls = '') =>
+  `<button type="button" class="icon-btn ${cls}" data-act="${act}" data-id="${t.id}" title="${esc(label)}" aria-label="${esc(`${label}: ${t.title}`)}">${icon(name)}</button>`;
+const MAX_TAGS = 3;
+
+function inferredChip(t) {
+  if (t.due_at || t.status === 'done') return '';
+  const info = TaskStore.dateInfo(t);
+  if (info.source !== 'text') return '';
+  return `<span class="chip inferred" title="Date detected from the task text; set a due date to make it exact">≈ ${esc(fmtDay(new Date(info.time)))}</span>`;
+}
+
 function taskMeta(t) {
-  const bits = [dueChip(t)];
+  const bits = [dueChip(t), inferredChip(t)];
+  if (t.priority >= 3 && t.status !== 'done') bits.push(`<span class="chip prio p${t.priority}">${PRIORITIES[t.priority]}</span>`);
   if (t.project_id && projectName(t.project_id)) bits.push(`<span class="chip" style="background:${esc(projectColor(t.project_id))}33">📁 ${esc(projectName(t.project_id))}</span>`);
   if (t.estimate_min) bits.push(`<span class="chip">⏳ ${hm(t.estimate_min)}${t.logged_min ? ` · ${hm(t.logged_min)} logged` : ''}</span>`);
   else if (t.logged_min) bits.push(`<span class="chip">⏱ ${hm(t.logged_min)} logged</span>`);
-  if (t.recurrence !== 'none') bits.push(`<span class="chip">🔁 ${esc(t.recurrence)}</span>`);
-  t.tags.forEach((g) => bits.push(`<span class="chip tag">#${esc(g)}</span>`));
+  if (t.recurrence && t.recurrence !== 'none') bits.push(`<span class="chip">🔁 ${esc(t.recurrence)}</span>`);
+  const tags = t.tags || [];
+  tags.slice(0, MAX_TAGS).forEach((g) => bits.push(`<span class="chip tag">#${esc(g)}</span>`));
+  if (tags.length > MAX_TAGS) bits.push(`<span class="chip tag more" title="${esc(tags.slice(MAX_TAGS).map((g) => '#' + g).join(' '))}">+${tags.length - MAX_TAGS}</span>`);
+  return bits.filter(Boolean).join('');
+}
+
+function stepsProgress(t) {
   const subs = t.subtasks || [];
-  if (subs.length) bits.push(`<span class="chip">${subs.filter((s) => s.status === 'done').length}/${subs.length} steps</span>`);
-  return bits.join('');
+  if (!subs.length) return '';
+  const done = subs.filter((s) => s.status === 'done').length, pct = Math.round((done / subs.length) * 100);
+  return `<div class="steps" title="${done} of ${subs.length} steps done"><div class="steps-bar"><span style="width:${pct}%"></span></div><span>${done}/${subs.length} steps</span></div>`;
+}
+
+function rowActions(t) {
+  if (S.trash) return `<button class="btn small" data-act="restore" data-id="${t.id}">Restore</button><button class="btn small danger" data-act="purge" data-id="${t.id}">Delete forever</button>`;
+  return (t.status !== 'done' ? iconBtn('focus-task', t, 'timer', 'Start focus session') : '')
+    + iconBtn('edit', t, 'edit', 'Edit task')
+    + iconBtn('del', t, 'trash', 'Delete task', 'danger');
 }
 
 function taskRow(t) {
   const subs = (t.subtasks || []).map((s) => `
     <label class="${s.status === 'done' ? 'done' : ''}"><input type="checkbox" data-act="toggle" data-id="${s.id}" ${s.status === 'done' ? 'checked' : ''}><span>${esc(s.title)}</span></label>`).join('');
   const box = S.selectMode
-    ? `<input type="checkbox" data-act="select" data-id="${t.id}" ${S.selected.has(t.id) ? 'checked' : ''} aria-label="Select task">`
-    : `<input type="checkbox" data-act="toggle" data-id="${t.id}" ${t.status === 'done' ? 'checked' : ''} aria-label="Mark complete">`;
-  const trashBtns = S.trash
-    ? `<button class="btn small" data-act="restore" data-id="${t.id}">Restore</button><button class="btn small danger" data-act="purge" data-id="${t.id}">Delete forever</button>`
-    : `<button class="btn small ghost" data-act="focus-task" data-id="${t.id}" title="Start a focus session">⏱️</button>
-       <button class="btn small ghost" data-act="edit" data-id="${t.id}" title="Edit">✏️</button>
-       <button class="btn small ghost" data-act="del" data-id="${t.id}" title="Delete">🗑️</button>`;
+    ? `<input type="checkbox" data-act="select" data-id="${t.id}" ${S.selected.has(t.id) ? 'checked' : ''} aria-label="Select ${esc(t.title)}">`
+    : `<input type="checkbox" data-act="toggle" data-id="${t.id}" ${t.status === 'done' ? 'checked' : ''} aria-label="Mark ${esc(t.title)} complete">`;
+  const meta = taskMeta(t);
   return `<article class="task p${t.priority} ${t.status === 'done' ? 'done' : ''}" data-task="${t.id}">
-    ${box}
-    <div><div class="t-title" data-act="edit" data-id="${t.id}">${esc(t.title)}</div>
-      <div class="t-meta">${taskMeta(t)}</div>
+    <div class="t-check">${box}</div>
+    <div class="t-body"><div class="t-title" data-act="edit" data-id="${t.id}">${esc(t.title)}</div>
+      ${meta ? `<div class="t-meta">${meta}</div>` : ''}
       ${subs ? `<div class="subs">${subs}</div>` : ''}</div>
-    <div class="t-actions">${trashBtns}</div></article>`;
+    <div class="t-actions" role="group" aria-label="Task actions">${rowActions(t)}</div></article>`;
+}
+
+const BOARD_MOVES = {
+  todo: [['doing', 'next', 'Start', 'Move to In progress']],
+  doing: [['todo', 'prev', '', 'Move back to To do'], ['done', 'check', 'Done', 'Mark as done']],
+  done: [['todo', 'undo', 'Reopen', 'Move back to To do']],
+};
+function boardCard(t) {
+  const moves = (BOARD_MOVES[t.status] || BOARD_MOVES.todo).map(([to, ico, label, hint]) =>
+    `<button type="button" class="move-btn ${to === 'done' ? 'go' : ''} ${label ? '' : 'icon-only-move'}" data-act="move" data-v="${to}" data-id="${t.id}" title="${hint}" aria-label="${esc(`${hint}: ${t.title}`)}">${icon(ico)}${label ? `<span>${label}</span>` : ''}</button>`).join('');
+  const meta = taskMeta(t);
+  return `<article class="task kcard p${t.priority} ${t.status === 'done' ? 'done' : ''}" draggable="true" data-drag="${t.id}" data-task="${t.id}">
+    <div class="t-title" data-act="edit" data-id="${t.id}">${esc(t.title)}</div>
+    ${meta ? `<div class="t-meta">${meta}</div>` : ''}
+    ${stepsProgress(t)}
+    <div class="k-foot"><div class="k-move">${moves}</div><div class="t-actions" role="group" aria-label="Task actions">${rowActions(t)}</div></div>
+  </article>`;
 }
 
 // ---------------------------------------------------------------- views
@@ -257,22 +306,27 @@ async function bulk(action, value) {
 
 // ---- board
 views.board = async () => {
-  const qs = S.boardProject ? `&project=${S.boardProject}` : '';
-  const tasks = await TaskStore.list({ status: 'all', sort: 'priority', project: S.boardProject });
+  const tasks = await TaskStore.list({ status: 'all', sort: 'chrono', project: S.boardProject });
   const cols = [['todo', '📝 To do'], ['doing', '🚀 In progress'], ['done', '✅ Done']];
-  view().innerHTML = `<div class="row" style="justify-content:space-between;margin-bottom:10px"><h1 style="margin:0">🗂️ Board</h1>
-    <select id="b-proj" style="width:auto">${projectOptions(S.boardProject, 'All projects')}</select></div>
+  const DONE_LIMIT = 25;
+  view().innerHTML = `<div class="page-head"><div><h1>🗂️ Board</h1><p class="muted page-sub">Each column is ordered by date, earliest first.</p></div>
+    <select id="b-proj" style="width:auto" aria-label="Filter by project">${projectOptions(S.boardProject, 'All projects')}</select></div>
     <div class="board">${cols.map(([k, label]) => {
       let items = tasks.filter((t) => t.status === k);
-      if (k === 'done') items = items.slice(0, 25);
-      return `<section class="col glass" data-col="${k}"><h2>${label}<span class="chip">${items.length}</span></h2>
-        ${items.map((t) => `<div draggable="true" data-drag="${t.id}">${taskRow(t).replace('<input type="checkbox"', '<input type="checkbox" hidden')}</div>`).join('') || '<div class="empty">Drop tasks here</div>'}
+      const total = items.length;
+      // Keep the most recently completed tasks, then show them in date order like the other columns.
+      if (k === 'done' && total > DONE_LIMIT) items = items.slice().sort((a, b) => String(b.completed_at || '').localeCompare(String(a.completed_at || ''))).slice(0, DONE_LIMIT).sort(TaskStore.compareChronological);
+      return `<section class="col" data-col="${k}" aria-label="${label.replace(/^\S+\s/, '')}"><header class="col-head"><h2>${label}</h2><span class="count" title="${total} task${total === 1 ? '' : 's'}">${total > items.length ? `${items.length} of ${total}` : total}</span></header>
+        <div class="col-body">${items.map(boardCard).join('') || '<div class="empty col-empty">Drop tasks here</div>'}</div>
       </section>`; }).join('')}</div>`;
   $('#b-proj').onchange = (e) => { S.boardProject = e.target.value; views.board(); };
-  $$('[data-drag]').forEach((el) => el.addEventListener('dragstart', (e) => { e.dataTransfer.setData('text/plain', el.dataset.drag); e.dataTransfer.effectAllowed = 'move'; }));
+  $$('[data-drag]').forEach((el) => {
+    el.addEventListener('dragstart', (e) => { e.dataTransfer.setData('text/plain', el.dataset.drag); e.dataTransfer.effectAllowed = 'move'; el.classList.add('dragging'); });
+    el.addEventListener('dragend', () => el.classList.remove('dragging'));
+  });
   $$('.col').forEach((col) => {
     col.addEventListener('dragover', (e) => { e.preventDefault(); col.classList.add('over'); });
-    col.addEventListener('dragleave', () => col.classList.remove('over'));
+    col.addEventListener('dragleave', (e) => { if (!col.contains(e.relatedTarget)) col.classList.remove('over'); });
     col.addEventListener('drop', async (e) => {
       e.preventDefault(); col.classList.remove('over');
       const id = e.dataTransfer.getData('text/plain');
@@ -380,7 +434,7 @@ views.focus = async () => {
       </section>
     </div>`;
   paintTimer(TFTimer.snapshot());
-  $('#t-task').onchange = (e) => TFTimer.setTask(e.target.value ? Number(e.target.value) : null);
+  $('#t-task').onchange = (e) => TFTimer.setTask(e.target.value || null);
   const nb = $('#notify-btn');
   if (nb && ('Notification' in window) && Notification.permission === 'granted') nb.hidden = true;
 };
@@ -698,7 +752,10 @@ const actions = {
   'trash-off'() { S.trash = false; refresh(); },
   async 'clear-done'() { if (!confirm('Move all completed tasks to the trash?')) return; try { const cleared = await TaskStore.clearDone(); toast(`${cleared} task(s) moved to trash`); refresh(); } catch (e) { fail(e); } },
   bulk(el) { if (el.dataset.v === 'delete' && !confirm(`Delete ${S.selected.size} task(s)?`)) return; bulk(el.dataset.v); },
-  'focus-task'(el) { TFTimer.setTask(Number(el.dataset.id)); go('focus'); },
+  'focus-task'(el) { TFTimer.setTask(el.dataset.id || null); go('focus'); },
+  async move(el) {
+    try { await TaskStore.update(el.dataset.id, { status: el.dataset.v }); if (el.dataset.v === 'done') toast('Nice work ✓'); await refresh(); refreshBadge(); } catch (e) { fail(e); }
+  },
   async briefing() { await go('agents'); await runCopilot('Summarize today’s tasks and recommend what I should focus on.'); },
   async review(el) { await runCopilot(el.dataset.v==='weekly'?'Review my tasks this week and suggest a realistic plan.':'Summarize today’s tasks and recommend priorities.'); },
   async advise() { await runCopilot('Identify overdue and high-priority tasks and recommend priority changes.'); },
@@ -826,8 +883,13 @@ function setDrawer(open) {
   $('#menu-btn').setAttribute('aria-expanded', String(isOpen));
   syncSidebarUi();
 }
+let sidebarAnimTimer;
 function setCollapsed(collapsed) {
-  document.documentElement.classList.toggle('sidebar-collapsed', collapsed);
+  const root = document.documentElement;
+  root.classList.add('sb-animating');
+  clearTimeout(sidebarAnimTimer);
+  sidebarAnimTimer = setTimeout(() => root.classList.remove('sb-animating'), 320);
+  root.classList.toggle('sidebar-collapsed', collapsed);
   try { localStorage.setItem(SIDEBAR_KEY, collapsed ? '1' : '0'); } catch (e) { /* ignore */ }
   syncSidebarUi();
 }

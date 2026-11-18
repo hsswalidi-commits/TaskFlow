@@ -51,6 +51,81 @@
       deleted_at: input.deleted_at || null, version: (old?.version || 0) + 1,
       subtasks: input.subtasks || old?.subtasks || [] };
   }
+
+  // ------------------------------------------------------------ chronological ordering
+  // Due dates win; otherwise a date written in the title/notes ("Sunday", "Nov 20", "2026-12-05",
+  // "tomorrow", "الأحد", "غداً") is used. "Day 3"/"Step 2" style numbers order undated tasks.
+  const WEEKDAYS = {sun:0,sunday:0,mon:1,monday:1,tue:2,tues:2,tuesday:2,wed:3,weds:3,wednesday:3,thu:4,thur:4,thurs:4,thursday:4,fri:5,friday:5,sat:6,saturday:6,
+    'الأحد':0,'الاحد':0,'الاثنين':1,'الإثنين':1,'الثلاثاء':2,'الأربعاء':3,'الاربعاء':3,'الخميس':4,'الجمعة':5,'السبت':6};
+  const MONTHS = {jan:0,january:0,feb:1,february:1,mar:2,march:2,apr:3,april:3,may:4,jun:5,june:5,jul:6,july:6,aug:7,august:7,sep:8,sept:8,september:8,oct:9,october:9,nov:10,november:10,dec:11,december:11};
+  const TODAY_WORDS = new Set(['today','tonight','اليوم','الليلة']), TOMORROW_WORDS = new Set(['tomorrow','tmrw','غدا','غداً','بكرة','بكره']);
+  const ORDINAL_WORDS = new Set(['day','week','step','phase','part','stage','sprint','يوم','اليوم','الأسبوع','اسبوع','المرحلة','مرحلة','الخطوة','خطوة']);
+  const dayFirst = !/^en-(us|ph)|^fil/i.test((typeof navigator !== 'undefined' && navigator.language) || '');
+  function parseTime(value) {
+    if (!value) return NaN;
+    if (value instanceof Date) return value.getTime();
+    let v = String(value).trim();
+    // Legacy SQLite rows: "YYYY-MM-DD HH:MM[:SS]" stored in UTC without a zone marker.
+    if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(v)) v = v.replace(' ', 'T') + (/[zZ]|[+-]\d{2}:?\d{2}$/.test(v) ? '' : 'Z');
+    return Date.parse(v);
+  }
+  const endOfDay = (y, m, d) => new Date(y, m, d, 23, 59, 0, 0).getTime();
+  function extractDate(text, anchorMs) {
+    const raw = String(text || ''); if (!raw.trim()) return {time: NaN, ordinal: Infinity};
+    const anchor = new Date(Number.isFinite(anchorMs) ? anchorMs : Date.now());
+    const base = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate());
+    let m = raw.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/);
+    let time = m ? endOfDay(+m[1], +m[2] - 1, +m[3]) : NaN;
+    if (!Number.isFinite(time) && (m = raw.match(/(?:^|[^\d\/])(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?(?![\d\/])/))) {
+      let a = +m[1], b = +m[2], day = dayFirst ? a : b, month = dayFirst ? b : a;
+      if (month > 12 && day <= 12) [day, month] = [month, day];
+      if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+        let year = m[3] ? (+m[3] < 100 ? 2000 + +m[3] : +m[3]) : base.getFullYear();
+        time = endOfDay(year, month - 1, day);
+        if (!m[3] && time < base.getTime() - 180 * 86400000) time = endOfDay(year + 1, month - 1, day);
+      }
+    }
+    const tokens = raw.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+    let ordinal = Infinity;
+    for (let i = 0; i < tokens.length; i++) {
+      const tok = tokens[i], next = tokens[i + 1];
+      if (ORDINAL_WORDS.has(tok) && next && /^\d{1,4}$/.test(next)) { if (ordinal === Infinity) ordinal = +next; i++; continue; }
+      if (Number.isFinite(time)) continue;
+      if (tok in MONTHS) {
+        const dayTok = /^\d{1,2}$/.test(next || '') ? next : (/^\d{1,2}$/.test(tokens[i - 1] || '') ? tokens[i - 1] : null);
+        if (dayTok) {
+          const yearTok = tokens.slice(i + 1, i + 3).find(x => /^\d{4}$/.test(x));
+          const year = yearTok ? +yearTok : base.getFullYear();
+          time = endOfDay(year, MONTHS[tok], +dayTok);
+          if (!yearTok && time < base.getTime() - 180 * 86400000) time = endOfDay(year + 1, MONTHS[tok], +dayTok);
+        }
+      } else if (TODAY_WORDS.has(tok)) time = endOfDay(base.getFullYear(), base.getMonth(), base.getDate());
+      else if (TOMORROW_WORDS.has(tok)) time = endOfDay(base.getFullYear(), base.getMonth(), base.getDate() + 1);
+      else if (tok in WEEKDAYS) {
+        const ahead = (WEEKDAYS[tok] - base.getDay() + 7) % 7;
+        time = endOfDay(base.getFullYear(), base.getMonth(), base.getDate() + ahead);
+      }
+    }
+    return {time, ordinal};
+  }
+  const infoCache = new WeakMap();
+  function dateInfo(t) {
+    if (!t || typeof t !== 'object') return {time: Infinity, ordinal: Infinity, source: 'none'};
+    const cached = infoCache.get(t); if (cached) return cached;
+    const due = parseTime(t.due_at);
+    const found = extractDate(`${t.title || ''} ${t.notes || ''}`, parseTime(t.created_at));
+    const info = Number.isFinite(due) ? {time: due, ordinal: found.ordinal, source: 'due'}
+      : Number.isFinite(found.time) ? {time: found.time, ordinal: found.ordinal, source: 'text'}
+      : {time: Infinity, ordinal: found.ordinal, source: 'none'};
+    infoCache.set(t, info); return info;
+  }
+  function compareChronological(a, b) {
+    const x = dateInfo(a), y = dateInfo(b);
+    return (x.time - y.time || 0) || (x.ordinal - y.ordinal || 0)
+      || (Number(b.priority || 0) - Number(a.priority || 0))
+      || ((parseTime(a.created_at) || 0) - (parseTime(b.created_at) || 0))
+      || String(a.title || '').localeCompare(String(b.title || ''));
+  }
   const requestValue = req => new Promise((resolve, reject) => { req.onsuccess = () => resolve(req.result); req.onerror = () => reject(req.error); });
   async function list(options = {}) {
     const records = await tx(STORE, 'readonly', s => requestValue(s.getAll()));
@@ -64,8 +139,10 @@
     if (options.due === 'week') rows = rows.filter(t => t.due_at && new Date(t.due_at) <= new Date(Date.now() + 7 * 86400000));
     const q = String(options.q || '').toLowerCase();
     if (q) rows = rows.filter(t => `${t.title} ${t.notes} ${(t.tags || []).join(' ')}`.toLowerCase().includes(q) || (t.subtasks || []).some(x => x.title.toLowerCase().includes(q)));
-    const far = '9999';
-    rows.sort((a,b) => options.sort === 'priority' ? b.priority-a.priority : options.sort === 'created' ? b.created_at.localeCompare(a.created_at) : options.sort === 'due' ? (a.due_at||far).localeCompare(b.due_at||far) : (a.status==='done')-(b.status==='done') || (a.due_at||far).localeCompare(b.due_at||far) || b.priority-a.priority);
+    rows.sort((a,b) => options.sort === 'priority' ? (b.priority-a.priority || compareChronological(a,b))
+      : options.sort === 'created' ? String(b.created_at).localeCompare(String(a.created_at))
+      : (options.sort === 'due' || options.sort === 'chrono') ? compareChronological(a,b)
+      : (a.status==='done')-(b.status==='done') || compareChronological(a,b));
     const children = records.filter(t => !t.deleted_at && t.parent_id);
     return rows.filter(t => !t.parent_id).map(t => ({...t, subtasks: children.filter(s => s.parent_id === t.id).sort((a,b) => a.position-b.position)}));
   }
@@ -236,5 +313,5 @@
     });
     if (channel) channel.postMessage({type: 'cleared'});
   }
-  window.TaskStore={open,list,get,create,update,remove,restore,purge,bulk,clearDone,records,saveRecord,deleteRecord,initializeDefaults,importLegacyBundle,migrate,exportData,exportToFile,validateImport,importData,importFromFile,clearAll,onChange(fn){if(channel)channel.onmessage=fn;}};
+  window.TaskStore={dateInfo,compareChronological,extractDate,open,list,get,create,update,remove,restore,purge,bulk,clearDone,records,saveRecord,deleteRecord,initializeDefaults,importLegacyBundle,migrate,exportData,exportToFile,validateImport,importData,importFromFile,clearAll,onChange(fn){if(channel)channel.onmessage=fn;}};
 })();

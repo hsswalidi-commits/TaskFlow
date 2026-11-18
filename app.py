@@ -228,6 +228,15 @@ def create_app(test_config=None):
 
     application.register_blueprint(ai_bp)
 
+    @application.url_defaults
+    def _static_cache_bust(endpoint, values):
+        # Version static URLs by file mtime so a deploy never pairs new HTML with stale cached CSS/JS.
+        if endpoint == "static" and "filename" in values and "v" not in values:
+            try:
+                values["v"] = int(os.stat(os.path.join(application.static_folder, values["filename"])).st_mtime)
+            except OSError:
+                pass
+
     @application.get("/")
     def index():
         return render_template("app.html", csrf_token="")

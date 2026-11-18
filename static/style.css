@@ -328,7 +328,9 @@ body { background: var(--bg1); }
 .steps { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: .78rem; color: var(--muted); }
 .steps-bar { flex: 1; height: 6px; border-radius: 99px; background: var(--line); overflow: hidden; }
 .steps-bar span { display: block; height: 100%; border-radius: inherit; background: var(--mint); }
-.k-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
+/* shared action bar: status moves on the left, tools on the right — identical in list and board */
+.card-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.kcard .card-actions { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
 .k-move { display: flex; gap: 6px; }
 .move-btn { display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 12px; border: 1px solid var(--line); border-radius: 10px;
   background: var(--glass-b); color: var(--text); font-size: .86rem; font-weight: 600; cursor: pointer; transition: background .15s, border-color .15s, color .15s; }
@@ -338,9 +340,26 @@ body { background: var(--bg1); }
 .move-btn.go:hover { background: var(--mint); border-color: var(--mint); color: #fff; }
 .move-btn.icon-only-move { width: 36px; padding: 0; justify-content: center; }
 
-@media (max-width: 1100px) and (min-width: 861px) { .board { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; } .k-foot { flex-wrap: wrap; } }
+@media (max-width: 1100px) and (min-width: 861px) { .board { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; } }
 @media (max-width: 860px) { .board { grid-template-columns: 1fr; } }
-@media (max-width: 520px) {
-  .task { grid-template-columns: auto minmax(0, 1fr); gap: 12px; }
-  .task > .t-actions { grid-column: 2; justify-content: flex-start; }
+/* list rows */
+.task.row-card { grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
+.task.row-card.selecting { grid-template-columns: auto minmax(0, 1fr) auto; }
+.row-card .card-actions { justify-content: flex-end; flex-wrap: nowrap; }
+.row-card .steps { max-width: 320px; }
+
+/* date + status hierarchy */
+.chip.due { font-weight: 650; }
+.chip.status.doing { background: color-mix(in srgb, var(--sky) 16%, transparent); color: var(--sky); font-weight: 650; }
+.col-group { display: flex; align-items: center; gap: 8px; margin: 4px 2px -2px; color: var(--muted); font-size: .72rem; font-weight: 750; letter-spacing: .06em; text-transform: uppercase; }
+.col-group::after { content: ''; flex: 1; height: 1px; background: var(--line); }
+.col-group.late { color: var(--rose); }
+.col-group:first-child { margin-top: 0; }
+
+@media (max-width: 760px) {
+  .task.row-card, .task.row-card.selecting { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .task.row-card.selecting { grid-template-columns: auto minmax(0, 1fr); }
+  .row-card .card-actions { grid-column: 1 / -1; justify-content: space-between; padding-top: 10px; border-top: 1px solid var(--line); flex-wrap: wrap; }
 }
+/* Mixed Arabic/English titles: correct bidi rendering, but aligned with the card's other content. */
+.t-title[dir="auto"] { text-align: left; }

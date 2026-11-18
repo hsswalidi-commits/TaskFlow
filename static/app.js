@@ -103,14 +103,19 @@ const projectOptions = (sel, withNone = 'No project') =>
   `<option value="">${esc(withNone)}</option>` + S.projects.map((p) => `<option value="${p.id}" ${String(sel) === String(p.id) ? 'selected' : ''}>${esc(p.name)}</option>`).join('');
 
 // ---------------------------------------------------------------- task rendering
+const startOfDayMs = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+function relDay(d) {
+  const diff = Math.round((startOfDayMs(d) - startOfDayMs(new Date())) / 86400000);
+  return diff === 0 ? 'Today' : diff === 1 ? 'Tomorrow' : diff === -1 ? 'Yesterday' : fmtDay(d);
+}
 function dueChip(t) {
   if (!t.due_at) return '';
   const d = new Date(t.due_at), now = new Date();
-  let cls = '';
-  if (t.status !== 'done') {
-    if (d < now) cls = 'late'; else if (d - now < 86400000) cls = 'soon';
-  }
-  return `<span class="chip ${cls}">📅 ${esc(fmtDateTime(t.due_at))}${cls === 'late' ? ' · overdue' : ''}</span>`;
+  if (Number.isNaN(d.getTime())) return '';
+  let cls = 'due';
+  if (t.status !== 'done') { if (d < now) cls += ' late'; else if (d - now < 86400000) cls += ' soon'; }
+  const label = `${relDay(d)} · ${fmtTime(d)}`;
+  return `<span class="chip ${cls}" title="Due ${esc(fmtDateTime(t.due_at))}">${cls.includes('late') ? 'Overdue · ' : ''}${esc(label)}</span>`;
 }
 
 const ICONS = {
@@ -128,12 +133,15 @@ const iconBtn = (act, t, name, label, cls = '') =>
 const MAX_TAGS = 3;
 
 function inferredChip(t) {
-  if (t.due_at || t.status === 'done') return '';
+  if (t.due_at) return '';
   const info = TaskStore.dateInfo(t);
-  if (info.source !== 'text') return '';
-  return `<span class="chip inferred" title="Date detected from the task text; set a due date to make it exact">≈ ${esc(fmtDay(new Date(info.time)))}</span>`;
+  if (info.source !== 'text' && info.source !== 'sequence') return '';
+  const d = new Date(info.time);
+  const why = info.source === 'sequence' ? `Estimated from its ${info.kind} number in the series` : 'Detected from the task text';
+  return `<span class="chip inferred" title="${why}; set a due date to make it exact">≈ ${esc(relDay(d))}</span>`;
 }
 
+const STATUS_LABEL = { todo: 'To do', doing: 'In progress', done: 'Done' };
 function taskMeta(t) {
   const bits = [dueChip(t), inferredChip(t)];
   if (t.priority >= 3 && t.status !== 'done') bits.push(`<span class="chip prio p${t.priority}">${PRIORITIES[t.priority]}</span>`);
@@ -154,43 +162,64 @@ function stepsProgress(t) {
   return `<div class="steps" title="${done} of ${subs.length} steps done"><div class="steps-bar"><span style="width:${pct}%"></span></div><span>${done}/${subs.length} steps</span></div>`;
 }
 
-function rowActions(t) {
-  if (S.trash) return `<button class="btn small" data-act="restore" data-id="${t.id}">Restore</button><button class="btn small danger" data-act="purge" data-id="${t.id}">Delete forever</button>`;
-  return (t.status !== 'done' ? iconBtn('focus-task', t, 'timer', 'Start focus session') : '')
+// One action bar for every task card (list and board), so the same control always does the same thing.
+const STATUS_MOVES = {
+  todo: [['doing', 'next', 'Start', 'Move to In progress'], ['done', 'check', '', 'Mark as done']],
+  doing: [['todo', 'prev', '', 'Move back to To do'], ['done', 'check', 'Done', 'Mark as done']],
+  done: [['todo', 'undo', 'Reopen', 'Move back to To do']],
+};
+function cardActions(t) {
+  if (S.trash) return `<div class="card-actions"><div class="t-actions"><button class="btn small" data-act="restore" data-id="${t.id}">Restore</button><button class="btn small danger" data-act="purge" data-id="${t.id}">Delete forever</button></div></div>`;
+  const moves = (STATUS_MOVES[t.status] || STATUS_MOVES.todo).map(([to, ico, label, hint]) =>
+    `<button type="button" class="move-btn ${to === 'done' ? 'go' : ''} ${label ? '' : 'icon-only-move'}" data-act="move" data-v="${to}" data-id="${t.id}" title="${hint}" aria-label="${esc(`${hint}: ${t.title}`)}">${icon(ico)}${label ? `<span>${label}</span>` : ''}</button>`).join('');
+  const tools = (t.status !== 'done' ? iconBtn('focus-task', t, 'timer', 'Start focus session') : '')
     + iconBtn('edit', t, 'edit', 'Edit task')
     + iconBtn('del', t, 'trash', 'Delete task', 'danger');
+  return `<div class="card-actions"><div class="k-move" role="group" aria-label="Change status">${moves}</div><div class="t-actions" role="group" aria-label="Task tools">${tools}</div></div>`;
 }
 
 function taskRow(t) {
   const subs = (t.subtasks || []).map((s) => `
     <label class="${s.status === 'done' ? 'done' : ''}"><input type="checkbox" data-act="toggle" data-id="${s.id}" ${s.status === 'done' ? 'checked' : ''}><span>${esc(s.title)}</span></label>`).join('');
-  const box = S.selectMode
-    ? `<input type="checkbox" data-act="select" data-id="${t.id}" ${S.selected.has(t.id) ? 'checked' : ''} aria-label="Select ${esc(t.title)}">`
-    : `<input type="checkbox" data-act="toggle" data-id="${t.id}" ${t.status === 'done' ? 'checked' : ''} aria-label="Mark ${esc(t.title)} complete">`;
-  const meta = taskMeta(t);
-  return `<article class="task p${t.priority} ${t.status === 'done' ? 'done' : ''}" data-task="${t.id}">
-    <div class="t-check">${box}</div>
-    <div class="t-body"><div class="t-title" data-act="edit" data-id="${t.id}">${esc(t.title)}</div>
+  const box = S.selectMode ? `<div class="t-check"><input type="checkbox" data-act="select" data-id="${t.id}" ${S.selected.has(t.id) ? 'checked' : ''} aria-label="Select ${esc(t.title)}"></div>` : '';
+  const status = t.status === 'doing' && !S.trash ? `<span class="chip status doing">In progress</span>` : '';
+  const meta = status + taskMeta(t);
+  return `<article class="task row-card p${t.priority} ${t.status === 'done' ? 'done' : ''} ${S.selectMode ? 'selecting' : ''}" data-task="${t.id}">
+    ${box}
+    <div class="t-body"><div class="t-title" dir="auto" data-act="edit" data-id="${t.id}">${esc(t.title)}</div>
       ${meta ? `<div class="t-meta">${meta}</div>` : ''}
+      ${stepsProgress(t)}
       ${subs ? `<div class="subs">${subs}</div>` : ''}</div>
-    <div class="t-actions" role="group" aria-label="Task actions">${rowActions(t)}</div></article>`;
+    ${cardActions(t)}</article>`;
 }
 
-const BOARD_MOVES = {
-  todo: [['doing', 'next', 'Start', 'Move to In progress']],
-  doing: [['todo', 'prev', '', 'Move back to To do'], ['done', 'check', 'Done', 'Mark as done']],
-  done: [['todo', 'undo', 'Reopen', 'Move back to To do']],
-};
 function boardCard(t) {
-  const moves = (BOARD_MOVES[t.status] || BOARD_MOVES.todo).map(([to, ico, label, hint]) =>
-    `<button type="button" class="move-btn ${to === 'done' ? 'go' : ''} ${label ? '' : 'icon-only-move'}" data-act="move" data-v="${to}" data-id="${t.id}" title="${hint}" aria-label="${esc(`${hint}: ${t.title}`)}">${icon(ico)}${label ? `<span>${label}</span>` : ''}</button>`).join('');
   const meta = taskMeta(t);
   return `<article class="task kcard p${t.priority} ${t.status === 'done' ? 'done' : ''}" draggable="true" data-drag="${t.id}" data-task="${t.id}">
-    <div class="t-title" data-act="edit" data-id="${t.id}">${esc(t.title)}</div>
+    <div class="t-title" dir="auto" data-act="edit" data-id="${t.id}">${esc(t.title)}</div>
     ${meta ? `<div class="t-meta">${meta}</div>` : ''}
     ${stepsProgress(t)}
-    <div class="k-foot"><div class="k-move">${moves}</div><div class="t-actions" role="group" aria-label="Task actions">${rowActions(t)}</div></div>
+    ${cardActions(t)}
   </article>`;
+}
+
+// Chronological buckets shown as dividers inside board columns.
+function dateBucket(t) {
+  const info = TaskStore.dateInfo(t);
+  if (!Number.isFinite(info.time)) return 'No date';
+  const today = startOfDayMs(new Date()), day = startOfDayMs(new Date(info.time)), diff = Math.round((day - today) / 86400000);
+  if (diff < 0) return t.status === 'done' ? 'Earlier' : 'Overdue';
+  if (diff === 0) return 'Today';
+  if (diff === 1) return 'Tomorrow';
+  if (diff <= 7) return 'Next 7 days';
+  return 'Later';
+}
+function groupedCards(items) {
+  let last = null;
+  return items.map((t) => {
+    const g = dateBucket(t), head = g !== last ? `<div class="col-group ${g === 'Overdue' ? 'late' : ''}" role="separator">${g}</div>` : '';
+    last = g; return head + boardCard(t);
+  }).join('');
 }
 
 // ---------------------------------------------------------------- views
@@ -317,7 +346,7 @@ views.board = async () => {
       // Keep the most recently completed tasks, then show them in date order like the other columns.
       if (k === 'done' && total > DONE_LIMIT) items = items.slice().sort((a, b) => String(b.completed_at || '').localeCompare(String(a.completed_at || ''))).slice(0, DONE_LIMIT).sort(TaskStore.compareChronological);
       return `<section class="col" data-col="${k}" aria-label="${label.replace(/^\S+\s/, '')}"><header class="col-head"><h2>${label}</h2><span class="count" title="${total} task${total === 1 ? '' : 's'}">${total > items.length ? `${items.length} of ${total}` : total}</span></header>
-        <div class="col-body">${items.map(boardCard).join('') || '<div class="empty col-empty">Drop tasks here</div>'}</div>
+        <div class="col-body">${items.length ? groupedCards(items) : '<div class="empty col-empty">Drop tasks here</div>'}</div>
       </section>`; }).join('')}</div>`;
   $('#b-proj').onchange = (e) => { S.boardProject = e.target.value; views.board(); };
   $$('[data-drag]').forEach((el) => {

@@ -53,78 +53,122 @@
   }
 
   // ------------------------------------------------------------ chronological ordering
-  // Due dates win; otherwise a date written in the title/notes ("Sunday", "Nov 20", "2026-12-05",
-  // "tomorrow", "الأحد", "غداً") is used. "Day 3"/"Step 2" style numbers order undated tasks.
+  // Every task resolves to one sortable timestamp, in this order of trust:
+  //   1. due_at (explicit)                                  source: 'due'
+  //   2. a date written in the title, notes or tags          source: 'text'
+  //      ("Sunday", "#الأحد", "tomorrow", "غداً", "Nov 20", "25/11", "2026-12-05")
+  //   3. a day/week sequence number ("Day 3", "اليوم 4", "اليوم الأول", "Week 2"),
+  //      laid out from the day the series was first created  source: 'sequence'
+  //   4. nothing found -> sorted after all dated tasks        source: 'none'
+  // Ties break on sequence number, then creation time, then title, then id, so the order
+  // is strictly deterministic and never depends on priority or IndexedDB insertion order.
+  const DAY_MS = 86400000;
   const WEEKDAYS = {sun:0,sunday:0,mon:1,monday:1,tue:2,tues:2,tuesday:2,wed:3,weds:3,wednesday:3,thu:4,thur:4,thurs:4,thursday:4,fri:5,friday:5,sat:6,saturday:6,
-    'الأحد':0,'الاحد':0,'الاثنين':1,'الإثنين':1,'الثلاثاء':2,'الأربعاء':3,'الاربعاء':3,'الخميس':4,'الجمعة':5,'السبت':6};
-  const MONTHS = {jan:0,january:0,feb:1,february:1,mar:2,march:2,apr:3,april:3,may:4,jun:5,june:5,jul:6,july:6,aug:7,august:7,sep:8,sept:8,september:8,oct:9,october:9,nov:10,november:10,dec:11,december:11};
+    'الأحد':0,'الاحد':0,'احد':0,'أحد':0,'الاثنين':1,'الإثنين':1,'اثنين':1,'الثلاثاء':2,'ثلاثاء':2,'الأربعاء':3,'الاربعاء':3,'اربعاء':3,'أربعاء':3,'الخميس':4,'خميس':4,'الجمعة':5,'جمعة':5,'السبت':6,'سبت':6};
+  const MONTHS = {jan:0,january:0,feb:1,february:1,mar:2,march:2,apr:3,april:3,may:4,jun:5,june:5,jul:6,july:6,aug:7,august:7,sep:8,sept:8,september:8,oct:9,october:9,nov:10,november:10,dec:11,december:11,
+    'يناير':0,'فبراير':1,'مارس':2,'أبريل':3,'ابريل':3,'مايو':4,'يونيو':5,'يوليو':6,'أغسطس':7,'اغسطس':7,'سبتمبر':8,'أكتوبر':9,'اكتوبر':9,'نوفمبر':10,'ديسمبر':11};
   const TODAY_WORDS = new Set(['today','tonight','اليوم','الليلة']), TOMORROW_WORDS = new Set(['tomorrow','tmrw','غدا','غداً','بكرة','بكره']);
-  const ORDINAL_WORDS = new Set(['day','week','step','phase','part','stage','sprint','يوم','اليوم','الأسبوع','اسبوع','المرحلة','مرحلة','الخطوة','خطوة']);
+  const DAY_WORDS = new Set(['day','يوم','اليوم','ليوم']), WEEK_WORDS = new Set(['week','wk','أسبوع','اسبوع','الأسبوع','الاسبوع']);
+  const STEP_WORDS = new Set(['step','phase','part','stage','sprint','session','lesson','module','الخطوة','خطوة','المرحلة','مرحلة','الجزء','جزء','الدرس','درس','الجلسة','جلسة']);
+  const WORD_NUMBERS = {first:1,second:2,third:3,fourth:4,fifth:5,sixth:6,seventh:7,eighth:8,ninth:9,tenth:10,one:1,two:2,three:3,four:4,five:5,six:6,seven:7,eight:8,nine:9,ten:10,
+    'الأول':1,'الاول':1,'أول':1,'الثاني':2,'الثانى':2,'الثالث':3,'الرابع':4,'الخامس':5,'السادس':6,'السابع':7,'الثامن':8,'التاسع':9,'العاشر':10};
   const dayFirst = !/^en-(us|ph)|^fil/i.test((typeof navigator !== 'undefined' && navigator.language) || '');
+  // Arabic-Indic (٠-٩) and Persian (۰-۹) digits -> ASCII, so "اليوم ٤" == "اليوم 4".
+  const asciiDigits = (v) => String(v || '').replace(/[\u0660-\u0669]/g, d => d.charCodeAt(0) - 0x0660).replace(/[\u06F0-\u06F9]/g, d => d.charCodeAt(0) - 0x06F0);
   function parseTime(value) {
     if (!value) return NaN;
     if (value instanceof Date) return value.getTime();
-    let v = String(value).trim();
+    let v = asciiDigits(value).trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(v)) { const [y, m, d] = v.split('-').map(Number); return endOfDay(y, m - 1, d); }
     // Legacy SQLite rows: "YYYY-MM-DD HH:MM[:SS]" stored in UTC without a zone marker.
-    if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(v)) v = v.replace(' ', 'T') + (/[zZ]|[+-]\d{2}:?\d{2}$/.test(v) ? '' : 'Z');
+    if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(v)) v = v.replace(' ', 'T') + 'Z';
+    else if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(v)) v = v.replace(' ', 'T');
     return Date.parse(v);
   }
   const endOfDay = (y, m, d) => new Date(y, m, d, 23, 59, 0, 0).getTime();
+  const startOfDay = (ms) => { const d = new Date(ms); return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime(); };
+  const validDay = (y, m, d) => { const x = new Date(y, m, d); return x.getFullYear() === y && x.getMonth() === m && x.getDate() === d; };
   function extractDate(text, anchorMs) {
-    const raw = String(text || ''); if (!raw.trim()) return {time: NaN, ordinal: Infinity};
+    const raw = asciiDigits(text).toLowerCase();
+    const none = {time: NaN, ordinal: Infinity, kind: null};
+    if (!raw.trim()) return none;
     const anchor = new Date(Number.isFinite(anchorMs) ? anchorMs : Date.now());
     const base = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate());
-    let m = raw.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/);
-    let time = m ? endOfDay(+m[1], +m[2] - 1, +m[3]) : NaN;
-    if (!Number.isFinite(time) && (m = raw.match(/(?:^|[^\d\/])(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?(?![\d\/])/))) {
-      let a = +m[1], b = +m[2], day = dayFirst ? a : b, month = dayFirst ? b : a;
+    const yearFor = (m, d, explicit) => {
+      if (explicit) return explicit;
+      const y = base.getFullYear();
+      return endOfDay(y, m, d) < base.getTime() - 180 * DAY_MS ? y + 1 : y;
+    };
+    let time = NaN, m;
+    if ((m = raw.match(/(?:^|\D)(\d{4})-(\d{1,2})-(\d{1,2})(?!\d)/)) && validDay(+m[1], +m[2] - 1, +m[3])) time = endOfDay(+m[1], +m[2] - 1, +m[3]);
+    if (!Number.isFinite(time) && (m = raw.match(/(?:^|[^\d\/.])(\d{1,2})[\/.](\d{1,2})(?:[\/.](\d{2,4}))?(?![\d\/.])/))) {
+      let day = dayFirst ? +m[1] : +m[2], month = dayFirst ? +m[2] : +m[1];
       if (month > 12 && day <= 12) [day, month] = [month, day];
-      if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
-        let year = m[3] ? (+m[3] < 100 ? 2000 + +m[3] : +m[3]) : base.getFullYear();
-        time = endOfDay(year, month - 1, day);
-        if (!m[3] && time < base.getTime() - 180 * 86400000) time = endOfDay(year + 1, month - 1, day);
-      }
+      const year = m[3] ? (+m[3] < 100 ? 2000 + +m[3] : +m[3]) : null;
+      if (month >= 1 && month <= 12) { const y = yearFor(month - 1, day, year); if (validDay(y, month - 1, day)) time = endOfDay(y, month - 1, day); }
     }
-    const tokens = raw.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
-    let ordinal = Infinity;
+    // Split letters from digits too, so "Day3", "اليوم4" and "#الأحد" all tokenize cleanly.
+    const tokens = raw.match(/\p{L}+|\p{N}+/gu) || [];
+    let ordinal = Infinity, kind = null;
     for (let i = 0; i < tokens.length; i++) {
       const tok = tokens[i], next = tokens[i + 1];
-      if (ORDINAL_WORDS.has(tok) && next && /^\d{1,4}$/.test(next)) { if (ordinal === Infinity) ordinal = +next; i++; continue; }
+      const isSeq = DAY_WORDS.has(tok) || WEEK_WORDS.has(tok) || STEP_WORDS.has(tok);
+      const n = next == null ? NaN : /^\d{1,4}$/.test(next) ? +next : (WORD_NUMBERS[next] || NaN);
+      if (isSeq && Number.isFinite(n)) {
+        if (ordinal === Infinity) { ordinal = n; kind = DAY_WORDS.has(tok) ? 'day' : WEEK_WORDS.has(tok) ? 'week' : 'step'; }
+        i++; continue;
+      }
       if (Number.isFinite(time)) continue;
       if (tok in MONTHS) {
         const dayTok = /^\d{1,2}$/.test(next || '') ? next : (/^\d{1,2}$/.test(tokens[i - 1] || '') ? tokens[i - 1] : null);
         if (dayTok) {
-          const yearTok = tokens.slice(i + 1, i + 3).find(x => /^\d{4}$/.test(x));
-          const year = yearTok ? +yearTok : base.getFullYear();
-          time = endOfDay(year, MONTHS[tok], +dayTok);
-          if (!yearTok && time < base.getTime() - 180 * 86400000) time = endOfDay(year + 1, MONTHS[tok], +dayTok);
+          const yTok = tokens.slice(i + 1, i + 3).find(x => /^\d{4}$/.test(x));
+          const y = yearFor(MONTHS[tok], +dayTok, yTok ? +yTok : null);
+          if (validDay(y, MONTHS[tok], +dayTok)) time = endOfDay(y, MONTHS[tok], +dayTok);
         }
       } else if (TODAY_WORDS.has(tok)) time = endOfDay(base.getFullYear(), base.getMonth(), base.getDate());
       else if (TOMORROW_WORDS.has(tok)) time = endOfDay(base.getFullYear(), base.getMonth(), base.getDate() + 1);
-      else if (tok in WEEKDAYS) {
-        const ahead = (WEEKDAYS[tok] - base.getDay() + 7) % 7;
-        time = endOfDay(base.getFullYear(), base.getMonth(), base.getDate() + ahead);
-      }
+      else if (tok in WEEKDAYS) time = endOfDay(base.getFullYear(), base.getMonth(), base.getDate() + (WEEKDAYS[tok] - base.getDay() + 7) % 7);
     }
-    return {time, ordinal};
+    return {time, ordinal, kind};
   }
-  const infoCache = new WeakMap();
+  // Day/week series start on the creation day of their earliest member. setSeries() is called
+  // with the full task set before every sort so all members share one anchor.
+  let series = {day: NaN, week: NaN}, infoCache = new WeakMap();
+  const textOf = (t) => `${t.title || ''} ${t.notes || ''} ${(Array.isArray(t.tags) ? t.tags : String(t.tags || '').split(',')).join(' ')}`;
+  function setSeries(tasks) {
+    const next = {day: NaN, week: NaN};
+    for (const t of tasks || []) {
+      const found = extractDate(textOf(t), parseTime(t.created_at));
+      if (found.kind !== 'day' && found.kind !== 'week') continue;
+      const created = startOfDay(parseTime(t.created_at) || Date.now());
+      if (!(created >= next[found.kind])) next[found.kind] = created;
+    }
+    series = next; infoCache = new WeakMap();
+  }
   function dateInfo(t) {
-    if (!t || typeof t !== 'object') return {time: Infinity, ordinal: Infinity, source: 'none'};
+    if (!t || typeof t !== 'object') return {time: Infinity, ordinal: Infinity, kind: null, source: 'none'};
     const cached = infoCache.get(t); if (cached) return cached;
     const due = parseTime(t.due_at);
-    const found = extractDate(`${t.title || ''} ${t.notes || ''}`, parseTime(t.created_at));
-    const info = Number.isFinite(due) ? {time: due, ordinal: found.ordinal, source: 'due'}
-      : Number.isFinite(found.time) ? {time: found.time, ordinal: found.ordinal, source: 'text'}
-      : {time: Infinity, ordinal: found.ordinal, source: 'none'};
+    const found = extractDate(textOf(t), parseTime(t.created_at));
+    let info;
+    if (Number.isFinite(due)) info = {time: due, ordinal: found.ordinal, kind: found.kind, source: 'due'};
+    else if (Number.isFinite(found.time)) info = {time: found.time, ordinal: found.ordinal, kind: found.kind, source: 'text'};
+    else if ((found.kind === 'day' || found.kind === 'week') && found.ordinal >= 0 && found.ordinal < 1000) {
+      const start = Number.isFinite(series[found.kind]) ? series[found.kind] : startOfDay(parseTime(t.created_at) || Date.now());
+      const s = new Date(start), offset = Math.max(0, found.ordinal - 1) * (found.kind === 'week' ? 7 : 1);
+      info = {time: endOfDay(s.getFullYear(), s.getMonth(), s.getDate() + offset), ordinal: found.ordinal, kind: found.kind, source: 'sequence'};
+    } else info = {time: Infinity, ordinal: found.ordinal, kind: found.kind, source: 'none'};
     infoCache.set(t, info); return info;
   }
+  const num = (v) => Number.isFinite(v) ? v : Infinity;
+  const cmp = (x, y) => (x === y ? 0 : x < y ? -1 : 1);
   function compareChronological(a, b) {
     const x = dateInfo(a), y = dateInfo(b);
-    return (x.time - y.time || 0) || (x.ordinal - y.ordinal || 0)
-      || (Number(b.priority || 0) - Number(a.priority || 0))
-      || ((parseTime(a.created_at) || 0) - (parseTime(b.created_at) || 0))
-      || String(a.title || '').localeCompare(String(b.title || ''));
+    return cmp(num(x.time), num(y.time)) || cmp(num(x.ordinal), num(y.ordinal))
+      || cmp(num(parseTime(a.created_at)), num(parseTime(b.created_at)))
+      || String(a.title || '').localeCompare(String(b.title || ''))
+      || cmp(String(a.id), String(b.id));
   }
   const requestValue = req => new Promise((resolve, reject) => { req.onsuccess = () => resolve(req.result); req.onerror = () => reject(req.error); });
   async function list(options = {}) {
@@ -139,6 +183,7 @@
     if (options.due === 'week') rows = rows.filter(t => t.due_at && new Date(t.due_at) <= new Date(Date.now() + 7 * 86400000));
     const q = String(options.q || '').toLowerCase();
     if (q) rows = rows.filter(t => `${t.title} ${t.notes} ${(t.tags || []).join(' ')}`.toLowerCase().includes(q) || (t.subtasks || []).some(x => x.title.toLowerCase().includes(q)));
+    setSeries(records.filter(t => !t.deleted_at));
     rows.sort((a,b) => options.sort === 'priority' ? (b.priority-a.priority || compareChronological(a,b))
       : options.sort === 'created' ? String(b.created_at).localeCompare(String(a.created_at))
       : (options.sort === 'due' || options.sort === 'chrono') ? compareChronological(a,b)
@@ -313,5 +358,5 @@
     });
     if (channel) channel.postMessage({type: 'cleared'});
   }
-  window.TaskStore={dateInfo,compareChronological,extractDate,open,list,get,create,update,remove,restore,purge,bulk,clearDone,records,saveRecord,deleteRecord,initializeDefaults,importLegacyBundle,migrate,exportData,exportToFile,validateImport,importData,importFromFile,clearAll,onChange(fn){if(channel)channel.onmessage=fn;}};
+  window.TaskStore={dateInfo,compareChronological,extractDate,setSeries,open,list,get,create,update,remove,restore,purge,bulk,clearDone,records,saveRecord,deleteRecord,initializeDefaults,importLegacyBundle,migrate,exportData,exportToFile,validateImport,importData,importFromFile,clearAll,onChange(fn){if(channel)channel.onmessage=fn;}};
 })();
